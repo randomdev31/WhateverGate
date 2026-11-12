@@ -15,8 +15,10 @@ Use the latest releases of [WhateverXe](https://github.com/b00t0x/WhateverXe/rel
 | Sonoma | 14.8.9 |
 | Sequoia | 15.8.x |
 | Tahoe | 26.7 or newer |
+| ~Golden Gate~ | 27.2.1 ~or newer~ |
 
 Sequoia and Tahoe accept compatible updates within their OS family. Future Apple changes may require an update to WEX or Graphics.
+Golden Gate is being WIP and there's no any code for it for now.
 
 ### Tested on hardware
 
