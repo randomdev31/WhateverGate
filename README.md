@@ -18,7 +18,7 @@ Use the latest releases of [WhateverXe](https://github.com/b00t0x/WhateverXe/rel
 | ~Golden Gate~ | 27.2.1 ~or newer~ |
 
 > [!WARNING]
-> This repository (WhateverGate) actually has 0 LoC for Golden Gate, why? Actually waiting to [Nullmoth](https://github.com/nullmoth) to release the source code of Liberator, please wait for updates
+> This repository (WhateverGate) actually has 0 LoC for Golden Gate, but is getting code tomorrow!
 
 Sequoia and Tahoe accept compatible updates within their OS family. Future Apple changes may require an update to WEX or Graphics.
 Golden Gate is being WIP and there's no any code for it for now.
