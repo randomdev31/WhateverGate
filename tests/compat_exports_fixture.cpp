@@ -3,7 +3,6 @@
 #include <cstdlib>
 #include <limits>
 #include "compat_kernel_fixture.hpp"
-extern "C" const char version[]="Darwin Kernel Version 25.6.9: synthetic; root:xnu-test/RELEASE_X86_64";
 #include "AppleIntelTGLCompat/AppleIntelTGLCompat.cpp"
 
 // No fake vtable selection: the real export must deliver the receiver,
@@ -126,6 +125,12 @@ int main(int argc,char **argv) {
         activateFixturePlugin();
         assert(hostStarts==1 && WEXGraphicsActivation::ready());
         assert(tglStart(nullptr,nullptr)==KERN_SUCCESS);
+        return 0;
+    }
+    if (argc==2 && !strcmp(argv[1],"plugin-unrecognized-host")) {
+        activateFixturePlugin();
+        assert(!hostStarts && !WEXGraphicsActivation::ready());
+        assert(tglStart(nullptr,nullptr)==KERN_FAILURE);
         return 0;
     }
     activateFixturePlugin();

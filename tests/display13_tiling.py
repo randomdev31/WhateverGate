@@ -52,6 +52,7 @@ struct Handoff {
 } handoff;
 bool prepare(IOService *that,IOService *provider){
  auto s=&handoff;auto pci=provider;
+ const auto trace=[](const char *){};
 PRODUCTION
  return true;
 }

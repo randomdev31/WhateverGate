@@ -1,41 +1,33 @@
-# WhateverXe
+<img src="assets/weggate.png"></img>
 
-[日本語](README_ja.md)
+> [!NOTE]
+> This project is looking for testers, any help will be thanked.
 
 WhateverXe is a Lilu plugin, derived from WhateverGreen, that adapts Apple graphics drivers for selected Intel Xe-LP integrated GPUs.
-Use the latest releases of [WhateverXe](https://github.com/b00t0x/WhateverXe/releases) and [WhateverXe Graphics](https://github.com/b00t0x/WhateverXe-Graphics/releases) together. See [CHANGELOG](CHANGELOG.md) for release notes.
+
+WhateverGate is the fork of WhateverXe designed to get Metal 2 on Golden Gate.
 
 ## Compatibility
 
 | macOS | Required version |
 | --- | --- |
-| Big Sur | 11.7.11 |
-| Monterey | 12.7.6 |
-| Ventura | 13.7.8 |
-| Sonoma | 14.8.9 |
-| Sequoia | 15.8.x |
-| Tahoe | 26.7 or newer |
-| ~Golden Gate~ | 27.2.1 ~or newer~ |
+| Golden Gate | 27.2 (Nullmoth Liberator, Intel) |
 
-> [!WARNING]
-> This repository (WhateverGate) actually has 0 LoC for Golden Gate, but is getting code tomorrow!
-
-Sequoia and Tahoe accept compatible updates within their OS family. Future Apple changes may require an update to WEX or Graphics.
-Golden Gate is being WIP and there's no any code for it for now.
+Golden Gate uses manual staging of the matching Graphics components.
 
 ### Tested on hardware
 
-- Tiger Lake-U: 48- and 80-EU configurations.
-- Alder Lake-N: 16- and 24-EU configurations.
-- Twin Lake: 32-EU configurations.
-- Alder Lake-H: 96-EU configurations, including single-channel operation.
-- Alder Lake-S: UHD Graphics 770.
 - Raptor Lake-U: 48-EU configurations.
 
 See [tested features and known issues](#tested-features-and-known-issues) for OS coverage and display configurations. PCI IDs are listed in [device selection](docs/device-selection.md).
 
 ### Expected to work, not yet tested on hardware
 
+- Tiger Lake-U: 48- and 80-EU configurations.
+- Alder Lake-N: 16- and 24-EU configurations.
+- Twin Lake: 32-EU configurations.
+- Alder Lake-H: 96-EU configurations, including single-channel operation.
+- Alder Lake-S: UHD Graphics 770.
 - Other supported Tiger Lake-U/H35 configurations, including 96 EU, and Tiger Lake-H45.
 - Other supported Alder Lake-N / Twin Lake configurations.
 - Other supported Alder Lake-H/P/U and Raptor Lake-H/P/U configurations.
@@ -91,17 +83,10 @@ These settings are unnecessary at 96MB and do not increase firmware-allocated me
 
 ## Tested features and known issues
 
+On my tested hardware i got black boxes and artifacting
+
 The common regression checks cover Metal, OpenGL, OpenCL, hardware H.264 encode/decode and HEVC decode. The table summarizes OS coverage and configuration-specific display features.
 
-| Configuration | Verified coverage |
-| --- | --- |
-| Tiger Lake mini PCs | Big Sur–Tahoe: 80 EU, two 1080p60 displays, display off/on, Safari video and Widevine |
-| Tiger Lake laptops | Big Sur–Tahoe: 48 EU, internal eDP and brightness, HDMI/USB-C, up to three displays and display off/on |
-| Alder Lake-N mini PCs | Big Sur–Tahoe: 16/24 EU, two 1080p60 HDMI displays and display off/on |
-| Alder Lake-N / Twin Lake laptops | MicroPC 2 and MiniBook X N100 on Big Sur/Tahoe: MIPI DSI, brightness, rotation, display off/on and HDMI/USB-C coexistence. MicroPC 2: HiDPI and up to three displays; MiniBook X N100: optional 60 Hz |
-| Raptor Lake-U laptop | MiniBook X U300 on Big Sur/Tahoe: internal MIPI DSI, brightness, rotation, HiDPI and up to two USB-C displays. Internal panel: 50 Hz; optional 60 Hz also tested on Big Sur |
-| Alder Lake-H | Big Sur–Tahoe: 96 EU, three displays using HDMI and a DP-to-HDMI adapter. Single-channel `4626` graphics acceleration checked on Big Sur |
-| Alder Lake-S | Big Sur–Tahoe: UHD 770, HDMI/DP/USB-C and up to three displays; Safari video, with Widevine checked on Big Sur/Tahoe |
 
 MIPI DSI support is **experimental**, limited to the tested GPD MicroPC 2 and CHUWI MiniBook X N100/U300 panels. Do not expect it to work on other devices.
 

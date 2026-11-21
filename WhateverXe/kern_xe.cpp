@@ -2068,7 +2068,7 @@ static void tglPrepareVenturaMMIOUC(KernelPatcher &patcher,IOPCIDevice *pci) {
  auto evidence=OSSerializer::forTarget(nullptr,tglMMIOEvidenceSerialize);
  if(evidence) {root->setProperty("TGLMMIOMappingEvidence",evidence);evidence->release();}
 }
-static void tglPrepareTahoeMMIOUC(KernelPatcher &patcher,IOPCIDevice *pci) {
+static void tglPrepareTahoeMMIOUC(KernelPatcher &patcher,IOPCIDevice *pci,XELP::OS os) {
  tglMMIOUCReady=false;
  auto bar=pci->getDeviceMemoryWithRegister(0x10);
  auto fn=patcher.solveSymbol(KernelPatcher::KernelID,"_pmap_enter_options");
@@ -2089,7 +2089,9 @@ static void tglPrepareTahoeMMIOUC(KernelPatcher &patcher,IOPCIDevice *pci) {
  size_t nonEPTAt=0;const bool nonEPTReady=native.find(nonEPT,nonEPTAt,false);
  size_t createAt=0;const bool createReady=native.find(create,createAt);
  size_t updateAt=0;const bool updateReady=native.find(update,updateAt);
- const bool protectCallReady=tglNativeProtectCall(protect,fn,XELPNative::ProtectABI::Tahoe);
+ // Both kernels use these pmap bridge slots. Verify each caller's frame separately.
+ const auto abi = os == XELP::OS::GoldenGate ? XELPNative::ProtectABI::GoldenGate : XELPNative::ProtectABI::Tahoe;
+ const bool protectCallReady=tglNativeProtectCall(protect,fn,abi);
  uint32_t lo,hi;asm volatile("rdmsr" : "=a"(lo),"=d"(hi) : "c"(0x277));
  const uint64_t pat=static_cast<uint64_t>(hi)<<32|lo;
  bool ok=tglVM.enabled && tglPrepareMMIOBAR(bar) &&
@@ -2107,7 +2109,8 @@ static void tglPrepareTahoeMMIOUC(KernelPatcher &patcher,IOPCIDevice *pci) {
  const bool checks[] {frameReady,flagsReady,argsReady,protectionReady,nonEPTReady,createReady,updateReady,protectCallReady};
  for(unsigned i=0;i<arrsize(checks);++i)guard[8+i]=checks[i];
  guard[17]=kernelMap && tglVMRead(kernelMap,tglKernelMap);guard[18]=tglKernelMap;guard[19]=ok;
- IORegistryEntry::getRegistryRoot()->setProperty("TGLTahoeMMIOGuard",guard,sizeof(guard));
+ IORegistryEntry::getRegistryRoot()->setProperty(
+  os == XELP::OS::GoldenGate ? "TGLGoldenGateMMIOGuard" : "TGLTahoeMMIOGuard",guard,sizeof(guard));
  if(ok) {
   tglProtectCacheMode=reinterpret_cast<decltype(tglProtectCacheMode)>(protect);
   tglPmapNewResume=fn+createAt+sizeof(create);tglPmapUpdateResume=fn+updateAt+sizeof(update);
@@ -2242,8 +2245,9 @@ static void tglPrepareSonomaMMIOUC(KernelPatcher &patcher,IOPCIDevice *pci) {
  if(evidence) {root->setProperty("TGLMMIOMappingEvidence",evidence);evidence->release();}
 }
 static void tglPrepareMMIOUC(KernelPatcher &patcher,IOPCIDevice *pci) {
- if((XELP::kernelOS(version)==XELP::OS::Tahoe)) {
-  tglPrepareTahoeMMIOUC(patcher,pci);return;
+ const auto os=XELP::kernelOS(version);
+ if(os==XELP::OS::Tahoe || os==XELP::OS::GoldenGate) {
+  tglPrepareTahoeMMIOUC(patcher,pci,os);return;
  }
  if((XELP::kernelOS(version)==XELP::OS::Sequoia)) {
   tglPrepareSequoiaMMIOUC(patcher,pci);return;
@@ -4578,6 +4582,57 @@ bool XE::isIntelProvider(size_t index) const {
     return requiresIntelProvider() && kextAppleIntelTGLCompat.loadIndex==index;
 }
 
+mach_vm_address_t XE::intelBranchTarget(mach_vm_address_t next,mach_vm_address_t target,int32_t &relative) {
+    if(XELPCall::relativeDisplacement(next,target,relative))return target;
+    if(branchRelayReserve && tglVM.nofault) {
+        using Reserve = uintptr_t (*)(uint32_t,uintptr_t);
+        const auto relay=reinterpret_cast<Reserve>(branchRelayReserve)(XELPCall::BranchRelayABI,target);
+        const auto read=[&](uintptr_t from,void *to,size_t length) {
+            return from>=branchRelayImage && length<=branchRelayImageSize &&
+                from-branchRelayImage<=branchRelayImageSize-length &&
+                tglVM.nofault(from,reinterpret_cast<uintptr_t>(to),length)==length;
+        };
+        if(XELPCall::relativeDisplacement(next,relay,relative) &&
+           XELPCall::importedTarget(relay,target,read)==target) {
+            __atomic_add_fetch(&branchRelaysUsed,1,__ATOMIC_RELAXED);
+            return relay;
+        }
+    }
+    __atomic_add_fetch(&branchRangeFailures,1,__ATOMIC_RELAXED);
+    return 0;
+}
+
+bool XE::routeIntelShort(KernelPatcher &patcher,size_t index,KernelPatcher::RouteRequest *requests,
+                        size_t count,mach_vm_address_t address,size_t size) {
+    if(XELP::kernelOS(version)!=XELP::OS::GoldenGate)
+        return patcher.routeMultipleShort(index,requests,count,address,size);
+    for(size_t i=0;i<count;++i) {
+        const auto from=patcher.solveSymbol<mach_vm_address_t>(index,requests[i].symbol,address,size);
+        patcher.clearError();
+        if(!from || from<address || size<5 || from-address>size-5)return false;
+        requests[i].from=from;
+    }
+    for(size_t i=0;i<count;++i) {
+        const auto &request=requests[i];
+        int32_t relative=0;
+        const auto target=intelBranchTarget(request.from+5,request.to,relative);
+        if(!target)return false;
+        mach_vm_address_t unused=0;
+        KernelPatcher::RouteRequest route(request.symbol,target,request.org ? *request.org : unused);
+        route.org=request.org;
+        const bool routed=patcher.routeMultipleShort(index,&route,1,address,size);
+        const uint8_t *code=reinterpret_cast<const uint8_t *>(request.from);
+        // Lilu can return a nonzero errno through its trampoline return value.
+        // Confirm the entry jump and original trampoline before admitting start.
+        if(!routed || code[0]!=0xE9 || XELPCall::relativeTarget(code+1,request.from+5)!=target ||
+           (request.org && (*request.org>>47)!=0x1FFFF)) {
+            __atomic_add_fetch(&branchRouteFailures,1,__ATOMIC_RELAXED);
+            return false;
+        }
+    }
+    return true;
+}
+
 bool XE::processKext(KernelPatcher &patcher, size_t index, mach_vm_address_t address, size_t size) {
     // No full donor patch set or native display/GT dispatcher in this stage.
     if(adlpLoadOnly) {
@@ -4594,6 +4649,15 @@ bool XE::processKext(KernelPatcher &patcher, size_t index, mach_vm_address_t add
         // or fall back to a second generation implementation in WEG.
         if(probe>=address && probe-address<size && configure>=address && configure-address<size) {
             xelpProviderProbe=probe;xelpProviderConfigureProbe=configure;
+            if(XELP::kernelOS(version)==XELP::OS::GoldenGate) {
+                const auto reserve=patcher.solveSymbol<mach_vm_address_t>(index,"_xelpReserveBranchRelay",address,size);
+                patcher.clearError();
+                if(reserve>=address && reserve-address<size) {
+                    branchRelayImage=address;
+                    branchRelayImageSize=size;
+                    branchRelayReserve=reserve;
+                }
+            }
             const auto query=patcher.solveSymbol<mach_vm_address_t>(index,"_xelpProbeCapabilities",address,size);
             patcher.clearError();
             display13DPProbeReady=query>=address && query-address<size &&
@@ -5594,8 +5658,17 @@ bool XE::processDisplay13Framebuffer(KernelPatcher &patcher,size_t index,mach_vm
  display13FBPowerBackendReady=C{C::Power13,installed}.ready();
  display13FBClockReady=C{C::Clock13,installed}.ready();
  display13FBMemoryReady=C{C::MemoryGroup13,installed}.ready();
- const bool backend=C::display13(installed,adlnOutputWiring.dp!=0,adlnOutputWiring.panel!=0).ready();
-	IORegistryEntry::getRegistryRoot()->setProperty("N97FramebufferBackendReady",backend);
+ const auto contract=C::display13(installed,adlnOutputWiring.dp!=0,adlnOutputWiring.panel!=0);
+ auto root=IORegistryEntry::getRegistryRoot();
+ root->setProperty("N97FramebufferBackendReady",contract.ready());
+ if(display13TraceEnabled) {
+  uint64_t record[] {1,contract.required,contract.available,contract.missing()};
+  root->setProperty("WEXDisplay13InstallationContract",record,sizeof(record));
+  uint64_t branches[] {1,reinterpret_cast<uintptr_t>(wrapAlderLakeNPlanarDBUFWrite)-(address+0x14FF),
+      branchRelayReserve!=0,__atomic_load_n(&branchRelaysUsed,__ATOMIC_RELAXED),
+      __atomic_load_n(&branchRangeFailures,__ATOMIC_RELAXED),__atomic_load_n(&branchRouteFailures,__ATOMIC_RELAXED)};
+  root->setProperty("WEXFramebufferBranchRouting",branches,sizeof(branches));
+ }
 	return true; // Installed routes; actual startup/scanout still require runtime checks.
 }
 
@@ -5646,7 +5719,7 @@ bool XE::processDisplay13FramebufferLifecycle(KernelPatcher &patcher,size_t inde
 	patcher.clearError();
 	// Six-byte first instruction boundary; the RIP counter begins at +11.
 	KernelPatcher::RouteRequest freeRoute(freeScanout,wrapAlderLakeNScanoutFree,orgAlderLakeNScanoutFree);
-	const bool memoryRouted=routed && memoryKnown && patcher.routeMultipleShort(index,&freeRoute,1,address,size);
+	const bool memoryRouted=routed && memoryKnown && routeIntelShort(patcher,index,&freeRoute,1,address,size);
 	patcher.clearError();
 	const char *disable="__ZN31AppleIntelFramebufferController14disableDisplayEP21AppleIntelFramebufferP21AppleIntelDisplayPathh";
 	const auto disableFn=patcher.solveSymbol<mach_vm_address_t>(index,disable,address,size);
@@ -5657,7 +5730,7 @@ bool XE::processDisplay13FramebufferLifecycle(KernelPatcher &patcher,size_t inde
 		!memcmp(reinterpret_cast<void *>(address+0x4D5BB),planeDisable,sizeof(planeDisable));
 	patcher.clearError();
 	KernelPatcher::RouteRequest disableRoute(disable,wrapAlderLakeNDisableDisplay,orgAlderLakeNDisableDisplay);
-	const bool disableRouted=memoryRouted && disableKnown && patcher.routeMultipleShort(index,&disableRoute,1,address,size);
+	const bool disableRouted=memoryRouted && disableKnown && routeIntelShort(patcher,index,&disableRoute,1,address,size);
 	patcher.clearError();
 	const char *pathSymbol="__ZN21AppleIntelFramebuffer24freeDisplayPathResourcesEP21AppleIntelDisplayPath";
 	const auto pathFn=patcher.solveSymbol<mach_vm_address_t>(index,pathSymbol,address,size);patcher.clearError();
@@ -5667,7 +5740,7 @@ bool XE::processDisplay13FramebufferLifecycle(KernelPatcher &patcher,size_t inde
 		!memcmp(reinterpret_cast<void *>(address+0x68C38),removeCall,sizeof(removeCall));
     if(adlnOutputWiring.dsi && !processDSIPathDisposal(patcher,index,address,size))return false;
 	KernelPatcher::RouteRequest pathRoute {pathSymbol,wrapAlderLakeNFreePath,orgAlderLakeNFreePath};
-	const bool pathRouted=disableRouted && pathKnown && patcher.routeMultipleShort(index,&pathRoute,1,address,size);
+	const bool pathRouted=disableRouted && pathKnown && routeIntelShort(patcher,index,&pathRoute,1,address,size);
 	patcher.clearError();
     return pathRouted && (!Display13FBTopology::multiOutputWiring(adlnOutputWiring) ||
         processDisplay13Retirement(patcher,index,address,size));
@@ -5703,7 +5776,7 @@ bool XE::processDisplay13Retirement(KernelPatcher &patcher,size_t index,mach_vm_
     KernelPatcher::RouteRequest routes[]={
         {freeAll,wrapDisplay13FreeResources,orgDisplay13FreeResources},
         {allocate,wrapDisplay13AllocateResources,orgDisplay13AllocateResources}};
-    const bool ready=patcher.routeMultipleShort(index,routes,arrsize(routes),address,size);patcher.clearError();
+    const bool ready=routeIntelShort(patcher,index,routes,arrsize(routes),address,size);patcher.clearError();
     IORegistryEntry::getRegistryRoot()->setProperty("WEXDisplay13RetirementReady",ready);
     return ready;
 }
@@ -5856,7 +5929,7 @@ bool XE::processDisplay13FramebufferDBUF(KernelPatcher &patcher,size_t index,mac
 	// A copied long prologue cannot safely execute that increment. Fail closed
 	// if the short route is out of range instead of falling back to a long one.
 	KernelPatcher::RouteRequest updateRoute(update,wrapAlderLakeNPrimaryDBUF,orgAlderLakeNPrimaryDBUF);
-	const bool primaryReady=known && patcher.routeMultipleShort(index,&updateRoute,1,address,size);
+	const bool primaryReady=known && routeIntelShort(patcher,index,&updateRoute,1,address,size);
 	patcher.clearError();
 	// Cursor setup is fully replaced; do not build/execute a copied prologue.
 	KernelPatcher::RouteRequest cursorRoute(cursor,wrapDisplay13CursorDBUF);
@@ -5879,10 +5952,10 @@ bool XE::processDisplay13FramebufferDBUF(KernelPatcher &patcher,size_t index,mac
 		!memcmp(reinterpret_cast<void *>(address+0x14EB),planarLoad,sizeof(planarLoad)) &&
 		!memcmp(reinterpret_cast<void *>(address+0x14FA),cursorWriter,sizeof(cursorWriter));
 	patcher.clearError();
-	const int64_t delta=static_cast<int64_t>(reinterpret_cast<uintptr_t>(wrapAlderLakeNPlanarDBUFWrite))-static_cast<int64_t>(address+0x14FF);
-	planarReady=planarReady && delta>=INT32_MIN && delta<=INT32_MAX;
+	int32_t relative=0;
+	planarReady=planarReady && intelBranchTarget(address+0x14FF,reinterpret_cast<uintptr_t>(wrapAlderLakeNPlanarDBUFWrite),relative);
 	if(planarReady) {
-		uint8_t call[6] {0xE8,0,0,0,0,0x90};const auto relative=static_cast<int32_t>(delta);memcpy(call+1,&relative,4);
+		uint8_t call[6] {0xE8,0,0,0,0,0x90};memcpy(call+1,&relative,4);
 		patcher.routeBlock(address+0x14FA,call,sizeof(call));
 		planarReady=patcher.getError()==KernelPatcher::Error::NoError && !memcmp(reinterpret_cast<void *>(address+0x14FA),call,sizeof(call));
 		patcher.clearError();
@@ -6092,7 +6165,7 @@ bool XE::processDisplay13FramebufferIRQ(KernelPatcher &patcher,size_t index,mach
 	const bool routed=patcher.routeMultiple(index,routes,arrsize(routes),address,size);
 	patcher.clearError();
 	KernelPatcher::RouteRequest swRoute {swSymbol,wrapDisplay13FBSWIRQ,orgDisplay13FBSWIRQ};
-	const bool swRouted=routed && patcher.routeMultipleShort(index,&swRoute,1,address,size);
+	const bool swRouted=routed && routeIntelShort(patcher,index,&swRoute,1,address,size);
 	patcher.clearError();return swRouted;
 }
 
@@ -6280,9 +6353,9 @@ bool XE::processDisplay13FramebufferGTT(KernelPatcher &patcher,size_t index,mach
 		const auto target=address+sites[i]+5+old;
 		if(i<3) {if(i && target!=readTarget)return false;readTarget=target;}
 		const auto replacement=i<3 ? reinterpret_cast<uintptr_t>(wrapAlderLakeNGTTRead) : reinterpret_cast<uintptr_t>(wrapAlderLakeNDSBSetup);
-		const int64_t distance=static_cast<int64_t>(replacement)-static_cast<int64_t>(address+sites[i]+5);
-		if(distance<INT32_MIN || distance>INT32_MAX)return false;
-		calls[i][0]=0xE8;const auto relative=static_cast<int32_t>(distance);memcpy(calls[i]+1,&relative,4);
+		int32_t relative=0;
+		if(!intelBranchTarget(address+sites[i]+5,replacement,relative))return false;
+		calls[i][0]=0xE8;memcpy(calls[i]+1,&relative,4);
 	}
 	for(unsigned i=0;i<4;++i) {
 		patcher.routeBlock(address+sites[i],calls[i],5);
@@ -6292,7 +6365,7 @@ bool XE::processDisplay13FramebufferGTT(KernelPatcher &patcher,size_t index,mach
 	}
 	KernelPatcher::RouteRequest initRoute(init,wrapDisplay13FBMemoryInit,orgDisplay13FBMemoryInit);
 	// Six-byte entry ends before any RIP-relative counter.
-	if(!patcher.routeMultipleShort(index,&initRoute,1,address,size)) {patcher.clearError();return false;}
+	if(!routeIntelShort(patcher,index,&initRoute,1,address,size)) {patcher.clearError();return false;}
 	patcher.clearError();KernelPatcher::RouteRequest cursorRoute(cursor,wrapDisplay13CursorSetup);
 	const bool ready=patcher.routeMultiple(index,&cursorRoute,1,address,size);
 	patcher.clearError();return ready && processAlderLakeNSharedReservation(patcher,index,address,size) && processAlderLakeNSysMem(patcher,index,address,size);
@@ -6312,7 +6385,7 @@ bool XE::processAlderLakeNSharedReservation(KernelPatcher &patcher,size_t index,
 		memcmp(reinterpret_cast<void *>(address+0x530DF),prefix,sizeof(prefix)))return false;
 	KernelPatcher::RouteRequest route {symbol,wrapDisplay13FramebufferPlatformCall,orgDisplay13FramebufferPlatformCall};
 	// Six-byte prologue ends before the RIP-relative statistics counter.
-	const bool ready=patcher.routeMultipleShort(index,&route,1,address,size);patcher.clearError();
+	const bool ready=routeIntelShort(patcher,index,&route,1,address,size);patcher.clearError();
 	IORegistryEntry::getRegistryRoot()->setProperty("N97SharedReservationHookReady",ready);return ready;
 }
 
@@ -6332,7 +6405,7 @@ bool XE::processAlderLakeNSysMem(KernelPatcher &patcher,size_t index,mach_vm_add
 	if((adlnFixedSysMemEnabled && !display13FBSysMem.lock) || !display13FBSysMem.retireLock)return false;
 	KernelPatcher::RouteRequest routes[] {{symbols[0],wrapAlderLakeNSysMemAllocate,orgAlderLakeNSysMemAllocate},
 		{symbols[1],wrapAlderLakeNSysMemFree,orgAlderLakeNSysMemFree}};
-	const bool ready=patcher.routeMultipleShort(index,routes,arrsize(routes),address,size);patcher.clearError();
+	const bool ready=routeIntelShort(patcher,index,routes,arrsize(routes),address,size);patcher.clearError();
 	IORegistryEntry::getRegistryRoot()->setProperty("N97SysMemHooksReady",ready);
 	IORegistryEntry::getRegistryRoot()->setProperty("N97FixedSysMemEnabled",adlnFixedSysMemEnabled);return ready;
 }
@@ -6711,7 +6784,7 @@ bool XE::processDisplay13FramebufferTopology(KernelPatcher &patcher,size_t index
 		{os,wrapAlderLakeNGetOSInformation,orgAlderLakeNGetOSInformation},
 		{state,wrapAlderLakeNPortState,orgAlderLakeNPortState}
 	};
-	const bool ready=patcher.routeMultipleShort(index,routes,arrsize(routes),address,size);
+	const bool ready=routeIntelShort(patcher,index,routes,arrsize(routes),address,size);
 	patcher.clearError();return ready;
 }
 
@@ -7197,7 +7270,7 @@ bool XE::processDisplay13FramebufferTC(KernelPatcher &patcher,size_t index,mach_
     };
     // Signal is already routed by the common SST frontend; its wrapper
     // dispatches TC here. Never install a second hook over the same entry.
-    if(!patcher.routeMultipleShort(index,routes,arrsize(routes),address,size)){patcher.clearError();return false;}
+    if(!routeIntelShort(patcher,index,routes,arrsize(routes),address,size)){patcher.clearError();return false;}
     patcher.clearError();
     struct Change {uint32_t offset;const uint8_t *before,*after;size_t size;};
     const Change changes[]={
@@ -7298,7 +7371,7 @@ bool XE::processDisplay13FramebufferOutput(KernelPatcher &patcher,size_t index,m
         {frontend[2].symbol,wrapAlderLakeNPortDDC,orgAlderLakeNPortDDC},
         {frontend[3].symbol,wrapDisplay13FBDDC,orgDisplay13FBDDC}
     };
-    const bool ready=patcher.routeMultipleShort(index,routes,arrsize(routes),address,size);patcher.clearError();
+    const bool ready=routeIntelShort(patcher,index,routes,arrsize(routes),address,size);patcher.clearError();
     IORegistryEntry::getRegistryRoot()->setProperty("N97FBGMBusObservationReady",ready);
     bool comboReady=true;
     if(ready && !(adlnOutputWiring.selected()&0x78)) {
@@ -7312,7 +7385,7 @@ bool XE::processDisplay13FramebufferOutput(KernelPatcher &patcher,size_t index,m
             {"__ZN31AppleIntelFramebufferController12enableClocksEP14AppleIntelPortS1_P11ClockParams",wrapDisplay13TCEnableClocks,orgDisplay13TCEnableClocks},
             {off,wrapDisplay13TCDisableClocks,orgDisplay13TCDisableClocks}
         };
-        comboReady=comboReady && patcher.routeMultipleShort(index,clocksRoutes,arrsize(clocksRoutes),address,size);patcher.clearError();
+        comboReady=comboReady && routeIntelShort(patcher,index,clocksRoutes,arrsize(clocksRoutes),address,size);patcher.clearError();
     }
     const bool complete=ready && comboReady && processDisplay13FramebufferColor(patcher,index,address,size) &&
         processDisplay13FramebufferSST(patcher,index,address,size) && processDisplay13FramebufferAUX(patcher,index,address,size);
@@ -7444,12 +7517,12 @@ bool XE::processFramebufferTraining(KernelPatcher &patcher,size_t index,mach_vm_
   {entries[Resources].symbol,wrapTGLAllocatePathResources,orgTGLAllocatePathResources},
   {entries[Stop].symbol,wrapTGLControllerStop,orgTGLControllerStop},
  };
- const bool routed=patcher.routeMultipleShort(index,routes,arrsize(routes),address,size);patcher.clearError();
+ const bool routed=routeIntelShort(patcher,index,routes,arrsize(routes),address,size);patcher.clearError();
  if(!routed)return false;
  // Lookup tracing is backend-specific, but the original has one owner.
  if(!display13FramebufferRequested) {
   KernelPatcher::RouteRequest trace(entries[Lookup].symbol,wrapTGLPathLookup,orgTGLPathLookup);
-  const bool traced=patcher.routeMultipleShort(index,&trace,1,address,size);patcher.clearError();
+  const bool traced=routeIntelShort(patcher,index,&trace,1,address,size);patcher.clearError();
   if(!traced)return false;
  }
  return true;
@@ -7465,7 +7538,7 @@ bool XE::processDisplay13Training(KernelPatcher &patcher,size_t index,mach_vm_ad
  const auto fn=patcher.solveSymbol<mach_vm_address_t>(index,e.symbol,address,size);patcher.clearError();
  if(fn!=address+e.offset || memcmp(reinterpret_cast<void *>(fn),e.prefix,sizeof(e.prefix)))return false;
  KernelPatcher::RouteRequest route(e.symbol,wrapDisplay13PortTraining,orgDisplay13PortTraining);
- const bool routed=patcher.routeMultipleShort(index,&route,1,address,size);patcher.clearError();
+ const bool routed=routeIntelShort(patcher,index,&route,1,address,size);patcher.clearError();
  if(!routed)return false;
  trainingLeaseDP13Mask=adlnOutputWiring.links();
  display13DPImage=address;
@@ -7900,10 +7973,9 @@ bool XE::processDisplay13FramebufferColor(KernelPatcher &patcher,size_t index,ma
     if(size<=0x940E8 || fn!=address+0x92F3E || table!=address+0x93D94 ||
         memcmp(reinterpret_cast<void *>(fn),entry,sizeof(entry)) ||
         memcmp(reinterpret_cast<void *>(address+0x92F93),call,sizeof(call)))return false;
-    const int64_t distance=static_cast<int64_t>(reinterpret_cast<uintptr_t>(wrapAlderLakeNGammaTable))-
-        static_cast<int64_t>(address+0x92F98);
-    if(distance<INT32_MIN || distance>INT32_MAX)return false;
-    uint8_t replacement[5] {0xE8};const auto rel=static_cast<int32_t>(distance);memcpy(replacement+1,&rel,4);
+    int32_t relative=0;
+    if(!intelBranchTarget(address+0x92F98,reinterpret_cast<uintptr_t>(wrapAlderLakeNGammaTable),relative))return false;
+    uint8_t replacement[5] {0xE8};memcpy(replacement+1,&relative,4);
     // Route the single updater CALL, retaining its original body and RIP-relative
     // counter. The configure short entry ends at push r15, before any counter.
     adlnGammaTableUpdate=table;
@@ -7912,10 +7984,10 @@ bool XE::processDisplay13FramebufferColor(KernelPatcher &patcher,size_t index,ma
         !memcmp(reinterpret_cast<void *>(address+0x92F93),replacement,sizeof(replacement));
     patcher.clearError();if(!callReady)return false;
     KernelPatcher::RouteRequest route(symbol,wrapAlderLakeNGamma10,orgAlderLakeNGamma10);
-    bool ready=patcher.routeMultipleShort(index,&route,1,address,size);patcher.clearError();
+    bool ready=routeIntelShort(patcher,index,&route,1,address,size);patcher.clearError();
     if(ready) {
         KernelPatcher::RouteRequest preRoute(preSymbol,wrapAlderLakeNPreGamma,orgAlderLakeNPreGamma);
-        ready=patcher.routeMultipleShort(index,&preRoute,1,address,size);patcher.clearError();
+        ready=routeIntelShort(patcher,index,&preRoute,1,address,size);patcher.clearError();
     }
     IORegistryEntry::getRegistryRoot()->setProperty("N97FBDisplay13PreGammaReady",ready);
     IORegistryEntry::getRegistryRoot()->setProperty("N97FBGammaObservationReady",ready);
@@ -8211,7 +8283,7 @@ bool XE::processFramebufferAGDC(KernelPatcher &patcher,size_t index,mach_vm_addr
         {client,wrapFramebufferUserClient,orgFramebufferUserClient},
         {callback,wrapFramebufferAGDCCallback,orgFramebufferAGDCCallback}
     };
-    bool ready=patcher.routeMultipleShort(index,routes,arrsize(routes),address,size);patcher.clearError();
+    bool ready=routeIntelShort(patcher,index,routes,arrsize(routes),address,size);patcher.clearError();
     if(ready)ready=processDisplay13TrialAGDC(patcher,index,address,size);
     IORegistryEntry::getRegistryRoot()->setProperty("WEXDisplay13AGDCGuardReady",ready);
     return ready;
@@ -8227,7 +8299,7 @@ bool XE::processDisplay13TrialAGDC(KernelPatcher &patcher,size_t index,mach_vm_a
     const uint8_t entry[]={0x55,0x48,0x89,0xe5,0x53,0x50};
     if(size<=0x670B9 || fn!=address+0x66F6E || memcmp(reinterpret_cast<void *>(fn),entry,sizeof(entry)))return false;
     KernelPatcher::RouteRequest route(symbol,wrapDisplay13TrialCommit,orgDisplay13TrialCommit);
-    const bool ready=patcher.routeMultipleShort(index,&route,1,address,size);patcher.clearError();return ready;
+    const bool ready=routeIntelShort(patcher,index,&route,1,address,size);patcher.clearError();return ready;
 }
 
 uint32_t XE::wrapDisplay13TrialCommit(void *controller,void *request,void *output) {
@@ -8390,40 +8462,102 @@ bool XE::prepareDisplay13BootScanout(IOPCIDevice *pci) {
     return result.status==AlderLakeN::LinearStatus::Success;
 }
 
+static bool bindFramebufferACPIDevice(IOPCIDevice *pci) {
+    const char *deviceKey="acpi-device";
+    const char *deviceClass="IOACPIPlatformDevice";
+    if(auto existing=pci->copyProperty(deviceKey)) {
+        const bool valid=existing->metaCast(deviceClass)!=nullptr;
+        existing->release();
+        return valid;
+    }
+    // Earlier A2X bridges omit the ACPI association published by Apple.
+    // Use the bridge's own ACPI provider to keep _ADR scoped to its bus.
+    auto bridge=pci->getProvider();
+    auto parent=bridge && bridge->metaCast("A2XACPIPCI") ? bridge->getProvider() : nullptr;
+    const auto plane=IORegistryEntry::getPlane("IOACPIPlane");
+    if(!plane || !parent || !parent->metaCast(deviceClass) || !parent->inPlane(plane))return false;
+    auto children=parent->getChildIterator(plane);
+    if(!children)return false;
+
+    const uint64_t address=(uint64_t(pci->getDeviceNumber())<<16)|pci->getFunctionNumber();
+    IORegistryEntry *peer=nullptr;
+    while(auto object=children->getNextObject()) {
+        auto child=OSDynamicCast(IORegistryEntry,object);
+        if(!child || !child->metaCast(deviceClass))continue;
+        auto property=child->copyProperty("_ADR");
+        auto number=OSDynamicCast(OSNumber,property);
+        const bool matches=number && number->unsigned64BitValue()==address;
+        OSSafeReleaseNULL(property);
+        if(!matches)continue;
+        if(peer) {
+            OSSafeReleaseNULL(peer);
+            break;
+        }
+        child->retain();
+        peer=child;
+    }
+    children->release();
+    if(!peer)return false;
+    auto existing=pci->copyProperty(deviceKey);
+    const bool bound=existing ? existing==peer : pci->setProperty(deviceKey,peer) && pci->getProperty(deviceKey)==peer;
+    OSSafeReleaseNULL(existing);
+    peer->release();
+    return bound;
+}
+
 bool XE::wrapDisplay13FramebufferStart(IOService *that,IOService *provider) {
+    // Failed candidates can be detached before user space reads their properties.
+    auto root=IORegistryEntry::getRegistryRoot();
+    const auto trace=[root](const char *stage) {
+        if(display13TraceEnabled)root->setProperty("WEXDisplay13StartupStage",stage);
+    };
+    trace("PCI provider");
 	auto s=callbackXE;auto pci=OSDynamicCast(IOPCIDevice,provider);
 	if(s->tglObservationController==that)s->tglObservationController=nullptr;
 	if(!pci)return false;
+    trace("panel wiring");
     const auto board=s->display13BoardWiring(provider);
     if(!Display13FBTopology::supportedWiring(board,s->xeProfile.display==XELP::Display::XeLPD,checkKernelArgument("-wex-dsi-adopt")) ||
        board.selected()!=s->adlnOutputWiring.selected())return false;
     if(board.dsi) {
+        trace("DSI hooks");
         const bool disposal=s->dsiFreePlane && s->dsiFreeScaler && s->dsiDetachPath && s->dsiRemovePath && s->dsiPipeMap;
         const bool ready=s->display13DSIModeHooksReady && s->dsiNativeWriterHooksReady &&
             s->dsiBootProbeReady && s->dsiCacheHooksReady && disposal;
         uint64_t record[] {1,ready,s->display13DSIModeHooksReady,s->dsiNativeWriterHooksReady,
             s->dsiBootProbeReady,s->dsiCacheHooksReady,disposal};
-        IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIStartupHooks",record,sizeof(record));
+        root->setProperty("WEXDSIStartupHooks",record,sizeof(record));
         if(!ready)return false;
     }
+    trace("Type-C hooks");
     if((board.selected()&0x78) && (!s->display13FBTCHooksReady || !s->display13TCProbeReady)) {
-        IORegistryEntry::getRegistryRoot()->setProperty("ADLPFBTCUnavailable",true);return false;
+        root->setProperty("ADLPFBTCUnavailable",true);return false;
     }
+ trace("display contract");
  const auto contract=XELP::DisplayContract::display13(s->display13Available(),s->adlnOutputWiring.dp!=0,s->adlnOutputWiring.panel!=0);
  const bool ready=s->display13FramebufferRequested && s->display13BootReady && s->tglActive &&
   contract.ready() && pci && xelpDisplay13Device(pci);
  uint64_t contractRecord[]={1,contract.required,contract.available,contract.missing()};
  that->setProperty("WEXDisplayStartupContract",contractRecord,sizeof(contractRecord));
+ if(display13TraceEnabled)root->setProperty("WEXDisplayStartupContract",contractRecord,sizeof(contractRecord));
  if(!contract.ready())for(uint64_t bit=1;bit;bit<<=1)if(contract.missing()&bit)
   SYSLOG("igfx","Display13 missing operation %s",XELP::DisplayContract::name(bit));
 	that->setProperty("N97FramebufferBackendReady",ready);
 	if(!ready)return false;
+    if(XELP::kernelOS(version)==XELP::OS::GoldenGate) {
+        trace("PCI to ACPI association");
+        const bool bound=bindFramebufferACPIDevice(pci);
+        root->setProperty("WEXFramebufferACPIDeviceReady",bound);
+        if(!bound)return false;
+    }
+    trace("multi-output resources");
 	const bool dualReady=s->display13BootReady && s->adlnScanoutDisableFB && s->orgAlderLakeNSysMemAllocate && s->orgAlderLakeNSysMemFree &&
 		(!adlnFixedSysMemEnabled || display13FBSysMem.lock) && display13FBSysMem.retireLock && s->adlnWorkLoopInGate && s->adlnWorkLoopTryClose && s->adlnWorkLoopOpen;
 	uint64_t dualPolicy[] {1,s->adlnOutputWiring.selected(),dualReady,s->display13BootReady,s->adlnScanoutDisableFB!=0,
 		s->orgAlderLakeNSysMemAllocate!=0,s->orgAlderLakeNSysMemFree!=0,display13FBSysMem.lock!=nullptr,display13FBSysMem.retireLock!=nullptr,adlnFixedSysMemEnabled};
-	IORegistryEntry::getRegistryRoot()->setProperty("N97FramebufferDualPolicy",dualPolicy,sizeof(dualPolicy));
+	root->setProperty("N97FramebufferDualPolicy",dualPolicy,sizeof(dualPolicy));
 	if(Display13FBTopology::multiOutputWiring(s->adlnOutputWiring) && !dualReady)return false;
+    trace("provider work loop and tiling");
 	// Native provider-workloop mode creates/binds the PCI interrupt source in
 	// controller start, rather than waiting for an accelerator or FB open.
 	// This backend supports linear boot surfaces and Y-tiled native scanout,
@@ -8441,12 +8575,14 @@ bool XE::wrapDisplay13FramebufferStart(IOService *that,IOService *provider) {
 		(provider->getProperty("AAPL,GfxYTile") || provider->setProperty("AAPL,GfxYTile",&enabled,sizeof(enabled)));
 	OSSafeReleaseNULL(yTiling);OSSafeReleaseNULL(mode);OSSafeReleaseNULL(features);
 	if(!featuresSelected)return false;
+    trace("firmware scanout handoff");
     if(Display13FBTopology::deferredBootPrepare(board,s->adlpDisplaySelected) && !s->prepareDisplay13BootScanout(pci))return false;
+    trace("native controller start");
 	SYSLOG("igfx","Display13 native controller start enter offline=%u",display13Offline);
 	const auto started=FunctionCast(wrapDisplay13FramebufferStart,s->orgFramebufferStart)(that,provider);
 	SYSLOG("igfx","Display13 native controller start return=%u",started);
 	that->setProperty("N97FramebufferOriginalStart",started);
-	IORegistryEntry::getRegistryRoot()->setProperty("N97FramebufferOriginalStart",started);
+	root->setProperty("N97FramebufferOriginalStart",started);
 	bool irqEnabled=false;
 	if(adlnIRQOwner(that)) {
 		const auto saved=IOSimpleLockLockDisableInterrupt(display13FBIRQ.lock);
@@ -8468,7 +8604,8 @@ bool XE::wrapDisplay13FramebufferStart(IOService *that,IOService *provider) {
    that->setProperty("N97GTPowerSample",power);power->release();
   }
  }
-	IORegistryEntry::getRegistryRoot()->setProperty("N97FramebufferStartAccepted",accepted);
+	root->setProperty("N97FramebufferStartAccepted",accepted);
+    trace(accepted ? "controller accepted" : "controller rejected");
 	return accepted;
 }
 
@@ -11863,12 +12000,7 @@ bool XE::processTGLAccelerator(KernelPatcher &patcher, size_t index, mach_vm_add
 				int32_t relative;memcpy(&relative,reinterpret_cast<void *>(address+0x355CE),4);
 				tglBlitPoolSubmit=address+0x355D2+relative;
                 // AuxKC placement can introduce this thunk on older hosts too.
-                const bool auxThunk=(XELP::kernelOS(version)==XELP::OS::BigSur) ||
-                    (XELP::kernelOS(version)==XELP::OS::Monterey) ||
-                    (XELP::kernelOS(version)==XELP::OS::Ventura) ||
-                    (XELP::kernelOS(version)==XELP::OS::Sonoma) ||
-                    (XELP::kernelOS(version)==XELP::OS::Sequoia) ||
-                    (XELP::kernelOS(version)==XELP::OS::Tahoe);
+                const bool auxThunk=XELP::hostOS(XELP::kernelOS(version));
                 uint64_t resolved=0;
                 blitInitOK=TGLAuxCall::resolveSubmit(tglBlitPoolSubmit,auxThunk,tglVMRead,resolved);
                 if(blitInitOK)tglBlitPoolSubmit=resolved;
@@ -12282,7 +12414,9 @@ bool XE::processTGLAccelerator(KernelPatcher &patcher, size_t index, mach_vm_add
 			// accelerator rejected before either native lifecycle callback.
 			const bool resourcesReady=(!tglGT2Detected || tglGT2Ready) &&
 				(!display12SmallGTDetected || display12SmallGTReady);
-			tglAcceleratorReady = resourcesReady && surfaceABIReady && adlnObserved && skuReady && urbReady && ccsReady && hizReady && ccsPSReady && ggttOK && observed && ok && gucOK && dmaWriteOK && hostOK && scratchOK && blitInitOK && tglMMIOUCReady && copyOK && auxAlignOK && iosCCSOK && ffModeOK && cpsOK && flushOK && tlbPreparserOK && semaphoreTLBOK && hangOK && recoveryOK && completionCacheOK && contextCacheOK;
+			const bool scanoutReady=XELP::kernelOS(version)!=XELP::OS::GoldenGate ||
+				!adlnDetected || dsiBackingHooksReady;
+			tglAcceleratorReady = resourcesReady && scanoutReady && surfaceABIReady && adlnObserved && skuReady && urbReady && ccsReady && hizReady && ccsPSReady && ggttOK && observed && ok && gucOK && dmaWriteOK && hostOK && scratchOK && blitInitOK && tglMMIOUCReady && copyOK && auxAlignOK && iosCCSOK && ffModeOK && cpsOK && flushOK && tlbPreparserOK && semaphoreTLBOK && hangOK && recoveryOK && completionCacheOK && contextCacheOK;
 			// r201: resource/copy diagnostics are absent, not admission requirements.
 			IORegistryEntry::getRegistryRoot()->setProperty("TGLResourceDiagnosticsRemoved",true);
 			IORegistryEntry::getRegistryRoot()->setProperty("TGLAcceleratorAdmissionReady", tglAcceleratorReady);
@@ -12296,13 +12430,15 @@ bool XE::processDisplay13Shutdown(KernelPatcher &p,size_t index,mach_vm_address_
  const uint8_t entry[]={0x55,0x48,0x89,0xe5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x48,0x83,0xec,0x18};
  const uint8_t powerCall[]={0xe8,0x3b,0x97,0,0};
  const auto target=p.solveSymbol<mach_vm_address_t>(index,symbol,address,size);p.clearError();
- const auto delta=static_cast<int64_t>(reinterpret_cast<uintptr_t>(wrapDisplay13Shutdown)-(target+5));
+ int32_t relative=0;
+ const bool reachable=XELP::kernelOS(version)==XELP::OS::GoldenGate ||
+  XELPCall::relativeDisplacement(target+5,reinterpret_cast<uintptr_t>(wrapDisplay13Shutdown),relative);
  bool known=size>0x51d4b && target==address+0x5173a &&
   !memcmp(reinterpret_cast<const void *>(target),entry,sizeof(entry)) &&
-  !memcmp(reinterpret_cast<const void *>(address+0x51d24),powerCall,sizeof(powerCall)) && delta==static_cast<int32_t>(delta);
+  !memcmp(reinterpret_cast<const void *>(address+0x51d24),powerCall,sizeof(powerCall)) && reachable;
  if(known) {
   KernelPatcher::RouteRequest route(symbol,wrapDisplay13Shutdown,orgDisplay13Shutdown);
-  known=p.routeMultipleShort(index,&route,1,address,size);p.clearError();
+  known=routeIntelShort(p,index,&route,1,address,size);p.clearError();
   if(known)display13ShutdownPowerCaller=address+0x51d29;
  }
  IORegistryEntry::getRegistryRoot()->setProperty("WEXDisplay13ShutdownReady",known);
@@ -12372,6 +12508,59 @@ bool XE::processFramebufferKext(KernelPatcher &patcher,size_t index,mach_vm_addr
  return true;
 }
 
+bool XE::processFramebufferDebugSysctls(KernelPatcher &patcher,size_t index,mach_vm_address_t address,size_t size) {
+ if(XELP::kernelOS(version)!=XELP::OS::GoldenGate)return true;
+ const char *add="__Z14registerSysctlv",*remove="__Z16unregisterSysctlv";
+ const uint8_t addEntry[]={0x55,0x48,0x89,0xE5,0x48,0xFF,0x05,0x81,0x08,0x08,0x00};
+ const uint8_t removeEntry[]={0x55,0x48,0x89,0xE5,0x48,0xFF,0x05,0xC0,0x05,0x08,0x00};
+ const uint8_t addRoot[]={0x48,0x8D,0x3D,0x45,0x1A,0x0D,0x00,0xE8};
+ const uint8_t removeRoot[]={0x48,0x8D,0x3D,0x25,0x19,0x0D,0x00,0x5D,0xE9};
+ // The exact donor's OID_AUTO debug.intelfb node is first to be
+ // registered, last to be removed, and shares static storage across starts.
+ const uint8_t rootOID[]={0xFF,0xFF,0xFF,0xFF,0x01,0x00,0xC0,0xC8};
+ if(size<0x1347D8)return false;
+ const auto addFn=patcher.solveSymbol<mach_vm_address_t>(index,add,address,size);patcher.clearError();
+ const auto removeFn=patcher.solveSymbol<mach_vm_address_t>(index,remove,address,size);patcher.clearError();
+ const auto root=patcher.solveSymbol<mach_vm_address_t>(index,"_sysctl__debug_intelfb",address,size);patcher.clearError();
+ if(addFn!=address+0x62B04 || removeFn!=address+0x62DCD || root!=address+0x134788 ||
+    memcmp(reinterpret_cast<const void *>(addFn),addEntry,sizeof(addEntry)) ||
+    memcmp(reinterpret_cast<const void *>(removeFn),removeEntry,sizeof(removeEntry)) ||
+    memcmp(reinterpret_cast<const void *>(address+0x62D3C),addRoot,sizeof(addRoot)) ||
+    memcmp(reinterpret_cast<const void *>(address+0x62E5C),removeRoot,sizeof(removeRoot)) ||
+    memcmp(reinterpret_cast<const void *>(root+0x10),rootOID,sizeof(rootOID)) ||
+    !XELPCall::targets(reinterpret_cast<const uint8_t *>(address+0x3F2E5),5,address+0x3F2E5,addFn))return false;
+ framebufferDebugSysctlLock=IOLockAlloc();
+ if(!framebufferDebugSysctlLock)return false;
+ KernelPatcher::RouteRequest routes[] {
+  {add,wrapFramebufferRegisterDebugSysctls,orgFramebufferRegisterDebugSysctls},
+  {remove,wrapFramebufferUnregisterDebugSysctls,orgFramebufferUnregisterDebugSysctls}
+ };
+ return routeIntelShort(patcher,index,routes,arrsize(routes),address,size);
+}
+
+void XE::wrapFramebufferRegisterDebugSysctls() {
+ auto s=callbackXE;
+ IOLockLock(s->framebufferDebugSysctlLock);
+ const bool alreadyRegistered=s->framebufferDebugSysctlsRegistered;
+ if(!alreadyRegistered) {
+  FunctionCast(wrapFramebufferRegisterDebugSysctls,s->orgFramebufferRegisterDebugSysctls)();
+  s->framebufferDebugSysctlsRegistered=true;
+ }
+ IOLockUnlock(s->framebufferDebugSysctlLock);
+ if(alreadyRegistered && display13TraceEnabled)
+  IORegistryEntry::getRegistryRoot()->setProperty("WEXFramebufferDebugSysctlsReused",true);
+}
+
+void XE::wrapFramebufferUnregisterDebugSysctls() {
+ auto s=callbackXE;
+ IOLockLock(s->framebufferDebugSysctlLock);
+ if(s->framebufferDebugSysctlsRegistered) {
+  FunctionCast(wrapFramebufferUnregisterDebugSysctls,s->orgFramebufferUnregisterDebugSysctls)();
+  s->framebufferDebugSysctlsRegistered=false;
+ }
+ IOLockUnlock(s->framebufferDebugSysctlLock);
+}
+
 bool XE::processFramebufferCommon(KernelPatcher &patcher,size_t index,mach_vm_address_t address,size_t size) {
  tglSonomaSurfaceFramebufferReady=tglInstallSonomaSurfaceABI(patcher,index,address,size,true);
  tglPlatformNVRAMReady=xelpInstallNVRAMABI(patcher,index,address,size);
@@ -12407,15 +12596,18 @@ bool XE::processFramebufferCommon(KernelPatcher &patcher,size_t index,mach_vm_ad
  if(laneReady) {
   framebufferLaneCaller=address+0x304F8;
   KernelPatcher::RouteRequest lane(laneSymbol,wrapFramebufferComputeLanes,orgFramebufferComputeLanes);
-  laneReady=patcher.routeMultipleShort(index,&lane,1,address,size);patcher.clearError();
+  laneReady=routeIntelShort(patcher,index,&lane,1,address,size);patcher.clearError();
  }
  const bool agdc=processFramebufferAGDC(patcher,index,address,size);
  const bool runtime=processFramebufferDonorRuntime(patcher,index,address,size);
  framebufferTrainingHooksReady=processFramebufferTraining(patcher,index,address,size);
- const bool ready=tglSonomaSurfaceFramebufferReady && tglPlatformNVRAMReady && probe && tglFramebufferInitReady && laneReady && agdc && runtime && framebufferTrainingHooksReady;
+ const bool sysctls=processFramebufferDebugSysctls(patcher,index,address,size);patcher.clearError();
+ const bool ready=tglSonomaSurfaceFramebufferReady && tglPlatformNVRAMReady && probe && tglFramebufferInitReady &&
+  laneReady && agdc && runtime && framebufferTrainingHooksReady && sysctls;
  uint32_t record[]={4,tglPlatformNVRAMReady,probe,tglFramebufferInitReady,tglSonomaSurfaceFramebufferReady,laneReady,agdc,runtime,framebufferTrainingHooksReady,ready};
  auto root=IORegistryEntry::getRegistryRoot();
  root->setProperty("WEXFramebufferCommonHooks",record,sizeof(record));
+ root->setProperty("WEXFramebufferDebugSysctlsReady",sysctls);
  root->setProperty("TGLSonomaSurfaceFramebufferReady",tglSonomaSurfaceFramebufferReady);
  root->setProperty("TGLHDMILaneRoute317",laneReady);
  root->setProperty("TGLHDMILaneGuard316",framebufferLaneCaller!=0);
@@ -13570,7 +13762,7 @@ void XE::processDisplay13Panel(KernelPatcher &patcher,size_t index,mach_vm_addre
  if(!display13FBPower.panelLock)display13FBPower.panelLock=IOLockAlloc();
  if(!display13FBPower.panelLock)return;
  KernelPatcher::RouteRequest route(symbol,wrapDisplay13PanelPower,orgDisplay13PanelPower);
- display13PanelPowerReady=patcher.routeMultipleShort(index,&route,1,address,size);
+ display13PanelPowerReady=routeIntelShort(patcher,index,&route,1,address,size);
  patcher.clearError();
 }
 // The caller holds c.lock. Only the retained controller/platform/map can own PPS0.
@@ -15302,7 +15494,7 @@ bool XE::installTGLCSB12(KernelPatcher &patcher,size_t index,mach_vm_address_t a
    *reinterpret_cast<uint8_t *>(address+0x28C9A)==0xE8 && *reinterpret_cast<uint8_t *>(address+0x28E14)==0xE9;
   if(ok) {
    KernelPatcher::RouteRequest protect {wake[0],xelpRegularForceWakeProtected,xelpRegularForceWakeOriginal};
-   ok=patcher.routeMultipleShort(index,&protect,1,address,size);patcher.clearError();
+   ok=routeIntelShort(patcher,index,&protect,1,address,size);patcher.clearError();
   }
   auto root=IORegistryEntry::getRegistryRoot();
   root->setProperty("WhateverXeForceWakeIRQProtected",ok);

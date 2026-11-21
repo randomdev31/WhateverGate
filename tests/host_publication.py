@@ -26,6 +26,7 @@ code=r'''
 #define SYSLOG(...) ((void)0)
 #include "kern_xelp_platform.hpp"
 #include "kern_host_power_contract.hpp"
+#include "kern_xelp_call_target.hpp"
 #include "kern_xelp_native_placement.hpp"
 size_t hostInstructionSize(const uint8_t*,size_t){return 0;}
 size_t hostFunctionExtent(uintptr_t,uintptr_t,size_t){return 0;}
@@ -126,6 +127,9 @@ struct XeHost {
  void setHostFramebufferEvent(uintptr_t){}
  void setHostSleepReady(bool){}
  void setHostWakeRecoveryReady(bool){}
+ uintptr_t intelBranchTarget(uintptr_t next,uintptr_t target,int32_t &relative){
+  return XELPCall::relativeDisplacement(next,target,relative)?target:0;
+ }
  std::vector<IOService*> owned;bool ownedDisplay13Framebuffer(IOService *f)const{return std::find(owned.begin(),owned.end(),f)!=owned.end();}
  IOFramebuffer *degraded=nullptr; bool failedDSIWakeFor(IOFramebuffer *f) const {return f && f==degraded;}
  void processKernel(KernelPatcher &,DeviceInfo *){events.push_back(8);}

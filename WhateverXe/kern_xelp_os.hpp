@@ -3,9 +3,9 @@
 #ifndef KERN_XELP_OS_HPP
 #define KERN_XELP_OS_HPP
 namespace XELP {
-enum class OS { Unknown, Donor, BigSur, Monterey, Ventura, Sonoma, Sequoia, Tahoe };
+enum class OS { Unknown, Donor, BigSur, Monterey, Ventura, Sonoma, Sequoia, Tahoe, GoldenGate };
 inline bool hostOS(OS os) {
-    return os>=OS::BigSur && os<=OS::Tahoe;
+    return os>=OS::BigSur && os<=OS::GoldenGate;
 }
 inline OS kernelOS(const char *version) {
     // The original DP1 execution environment is a separate exact identity.
@@ -42,6 +42,7 @@ inline OS kernelOS(const char *version) {
     if (numbers[0]>=20 && numbers[0]<=24 && numbers[1]==6)
         return static_cast<OS>(unsigned(OS::BigSur)+numbers[0]-20);
     if (numbers[0]==25 && numbers[1]>=6) return OS::Tahoe;
+    if (numbers[0]==27 && numbers[1]==2) return OS::GoldenGate;
     return OS::Unknown;
 }
 }

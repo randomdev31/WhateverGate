@@ -54,16 +54,20 @@ struct XE {
  bool framebufferDonorAttempted=false,framebufferDonorCommonReady=false,framebufferBackendInstalled=false;
  bool display13FramebufferRequested=false,tglPlatformNVRAMReady=false,tglProbeReady=false,tglFramebufferInitReady=false;
  void *tglPathPoolLock=(void*)1,*framebufferStartedController=nullptr;bool framebufferStartInProgress=false,tglLeasesStopping=false;
- bool runtimeOK=true,agdcOK=true,backendOK=true,trainingOK=true,framebufferTrainingHooksReady=false;
+ bool runtimeOK=true,agdcOK=true,backendOK=true,trainingOK=true,framebufferTrainingHooksReady=false,sysctlOK=true;
  uintptr_t orgFramebufferStart=0,orgFramebufferInit=0,orgFramebufferComputeLanes=0,framebufferLaneCaller=0;
  uintptr_t xelpProviderProbe=0x2000,xelpProviderConfigureProbe=0x3000;
  unsigned commonRuntimeCalls=0,backendCalls=0,startCalls=0;bool stopDuringStart=false,nativeOK=true;
  bool processFramebufferKext(KernelPatcher&,size_t,uintptr_t,size_t);
+ bool routeIntelShort(KernelPatcher &p,size_t id,KernelPatcher::RouteRequest *r,size_t n,uintptr_t a,size_t z){
+  return p.routeMultipleShort(id,r,n,a,z);
+ }
  bool processDisplay13Shutdown(KernelPatcher&,size_t,uintptr_t,size_t){++shutdownCalls;return true;}
  bool processFramebufferCommon(KernelPatcher&,size_t,uintptr_t,size_t);
  bool processFramebufferDonorRuntime(KernelPatcher&,size_t,uintptr_t,size_t){++commonRuntimeCalls;return runtimeOK;}
  bool processFramebufferAGDC(KernelPatcher&,size_t,uintptr_t,size_t){return agdcOK;}
  bool processFramebufferTraining(KernelPatcher&,size_t,uintptr_t,size_t){return trainingOK;}
+ bool processFramebufferDebugSysctls(KernelPatcher&,size_t,uintptr_t,size_t){return sysctlOK;}
  bool backend(KernelPatcher&,size_t,uintptr_t,size_t){++backendCalls;
   assert(framebufferDonorAttempted && orgFramebufferStart && commonRuntimeCalls==1);
   IOService c;assert(!wrapFramebufferStart(&c,&c));return backendOK;}
@@ -88,7 +92,7 @@ int main(int argc,char **argv){
   if(argc>1)assert(!memcmp(image.data()+span.first,span.second.data(),span.second.size()));
   else memcpy(image.data()+span.first,span.second.data(),span.second.size());
  }
- for(bool display13:{false,true})for(unsigned failure=0;failure<16;++failure){
+ for(bool display13:{false,true})for(unsigned failure=0;failure<17;++failure){
   shutdownCalls=0;
   auto b=image;uintptr_t pure=0x1234;memcpy(b.data()+0xccad0+0x188,&pure,sizeof(pure));
   XE x;callbackXE=&x;x.display13FramebufferRequested=display13;KernelPatcher p;
@@ -96,6 +100,7 @@ int main(int argc,char **argv){
   // are the real consumer guards behind the host notification-order fixture.
   if(failure==14)x.xelpProviderProbe=0;
   if(failure==15)x.xelpProviderConfigureProbe=0;
+  if(failure==16)x.sysctlOK=false;
   surfaceOK=failure!=5;nvramOK=failure!=6;x.runtimeOK=failure!=7;x.agdcOK=failure!=8;x.backendOK=failure!=9;x.trainingOK=failure!=10;x.stopDuringStart=failure==11;x.nativeOK=failure!=12;
   if(failure>=1&&failure<=4)p.failAt=failure;
   bool handled=x.processFramebufferKext(p,1,(uintptr_t)b.data(),b.size());

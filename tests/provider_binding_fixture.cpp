@@ -6,7 +6,6 @@
 #include "AppleIntelTGLCompatPortProbe.hpp"
 #include "kern_display13_clock.hpp"
 #include "compat_kernel_fixture.hpp"
-extern "C" const char version[]="Darwin Kernel Version 25.6.9: synthetic; root:xnu-test/RELEASE_X86_64";
 #include "AppleIntelTGLCompat/AppleIntelTGLCompat.cpp"
 // PROVIDER_SOURCE
 int main(int argc,char **argv) {

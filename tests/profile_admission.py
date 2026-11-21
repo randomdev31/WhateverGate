@@ -63,10 +63,11 @@ int main(){
   {0x4626,true,true,false},{0x4628,true,true,false},{0x462a,true,true,false},{0x46a0,true,true,false},{0x46a1,true,true,false},{0x46a2,true,true,false},{0x46b0,true,true,false},{0x46b1,true,true,false},{0x46b2,true,true,false},{0x46c0,true,true,false},{0x46c1,true,true,false},{0x46c2,true,true,false},{0xa720,true,true,false},{0xa721,true,true,false},{0x46a3,true,true,false},{0x46a6,true,true,false},{0x46a8,true,true,false},{0x46aa,true,true,false},{0x46b3,true,true,false},{0x46c3,true,true,false},{0xa7a0,true,true,false},{0xa7a1,true,true,false},{0xa7a8,true,true,false},{0xa7a9,true,true,false},{0xa7aa,true,true,false},{0xa7ab,true,true,false},{0xa7ac,true,true,false},{0xa7ad,true,true,false},
  };
  char text[180];
- for(unsigned major=20;major<=25;++major)for(unsigned patch:{0U,73U,998U})
+ for(unsigned major:{20U,21U,22U,23U,24U,25U,27U})for(unsigned patch:{0U,73U,998U})
  for(unsigned rev:{0U,1U,12U,255U})for(bool disabled:{false,true})for(bool off:{false,true})
  for(const auto &target:targets){
-  snprintf(text,sizeof(text),"Darwin Kernel Version %u.6.%u: arbitrary-servicing-metadata/RELEASE_X86_64",major,patch);
+  const unsigned minor=major==27 ? 2 : 6;
+  snprintf(text,sizeof(text),"Darwin Kernel Version %u.%u.%u: arbitrary-servicing-metadata/RELEASE_X86_64",major,minor,patch);
   version=text;noaccel=disabled;tglOff=off;XE x;
   x.selectProfile(XELP::identify((target.id<<16)|0x8086,rev));
   const bool admitted=target.display13 || !off;
@@ -92,6 +93,8 @@ int main(){
  // A family name is not enough: unsupported ABI families and malformed
  // versions must not select a consumer merely because its GPU is known.
  const char *invalid[]={"Darwin Kernel Version 26.6.0: future/RELEASE_X86_64",
+  "Darwin Kernel Version 27.1.0: other/RELEASE_X86_64",
+  "Darwin Kernel Version 27.2.0: wrong/RELEASE_ARM64",
   "Darwin Kernel Version 25.6.0: wrong/RELEASE_ARM64", "broken"};
  noaccel=tglOff=false;
  for(const auto bad:invalid)for(const auto &target:targets){

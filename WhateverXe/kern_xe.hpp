@@ -85,8 +85,13 @@ public:
     void setHostSleepReady(bool ready) { hostSleepReady=ready; }
     void setHostWakeRecoveryReady(bool ready) { hostWakeRecoveryReady=ready; }
     void setHostFramebufferEvent(mach_vm_address_t event) { hostFramebufferEvent=event; }
+    mach_vm_address_t intelBranchTarget(mach_vm_address_t next,mach_vm_address_t target,int32_t &relative);
 
 private:
+    bool routeIntelShort(KernelPatcher &,size_t,KernelPatcher::RouteRequest *,size_t,mach_vm_address_t,size_t);
+    mach_vm_address_t branchRelayImage {},branchRelayReserve {};
+    size_t branchRelayImageSize {};
+    uint32_t branchRelaysUsed {},branchRangeFailures {},branchRouteFailures {};
     bool adlpLoadOnly {};
     bool processADLPLoadOnly(KernelPatcher &,size_t,mach_vm_address_t,size_t);
     static IOService *rejectADLPFramebufferProbe(IOService *,IOService *,SInt32 *);
@@ -794,6 +799,12 @@ private:
 	bool tglFramebufferInitReady {false};
  // The donor layer owns its hooks once, before the hardware backend runs.
  bool framebufferDonorAttempted {},framebufferDonorCommonReady {},framebufferBackendInstalled {};
+ IOLock *framebufferDebugSysctlLock {};
+ bool framebufferDebugSysctlsRegistered {};
+ mach_vm_address_t orgFramebufferRegisterDebugSysctls {},orgFramebufferUnregisterDebugSysctls {};
+ bool processFramebufferDebugSysctls(KernelPatcher &,size_t,mach_vm_address_t,size_t);
+ static void wrapFramebufferRegisterDebugSysctls();
+ static void wrapFramebufferUnregisterDebugSysctls();
  mach_vm_address_t orgFramebufferStart {},orgFramebufferInit {},orgFramebufferComputeLanes {},framebufferLaneCaller {};
  __attribute__((noinline)) bool processFramebufferKext(KernelPatcher &,size_t,mach_vm_address_t,size_t);
  bool processDisplay13Shutdown(KernelPatcher &,size_t,mach_vm_address_t,size_t);

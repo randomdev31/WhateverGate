@@ -20,3 +20,8 @@ with tempfile.TemporaryDirectory(prefix='compat-exports-') as directory:
         if result.returncode:
             failed.append(mode)
     assert not failed, 'Compat contract failures: '+', '.join(failed)
+
+for release, mode in [((27, 2, 0), 'plugin-off'), ((27, 1, 0), 'plugin-unrecognized-host')]:
+    with tempfile.TemporaryDirectory(prefix='compat-host-activation-') as directory:
+        exe = compile_fixture(directory, fixture, release=release)
+        subprocess.run([str(exe), mode], check=True)

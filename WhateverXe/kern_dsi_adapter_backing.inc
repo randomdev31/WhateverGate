@@ -18,19 +18,23 @@ bool XE::processDSIBackingHooks(KernelPatcher &patcher,size_t index,mach_vm_addr
         {symbols[1],wrapDSIBackingFree,orgDSIBacking[1]}};
     // Short routes copy only the six-byte push/mov/push prologue. The free
     // entry has a relative branch at byte 12; never copy it into a trampoline.
-    const bool ready=known && patcher.routeMultipleShort(index,routes,2,address,size);patcher.clearError();
+    const bool ready=known && routeIntelShort(patcher,index,routes,arrsize(routes),address,size);
+    patcher.clearError();
     IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIBackingHooksReady",ready);return ready;
 }
 
 uint32_t XE::wrapDSIBackingAllocate(OSObject *pipe,void *record,uint32_t flags) {
+    // The donor's display machine can call this before requestProbe binds the
+    // framebuffer, or after its pipe is removed. The native leaf needs a pipe.
+    if(!pipe)return kIOReturnNotReady;
     auto &o=dsiPendingBacking;
     if(!__atomic_load_n(&o.framebuffer,__ATOMIC_ACQUIRE))
         return FunctionCast(wrapDSIBackingAllocate,callbackXE->orgDSIBacking[0])(pipe,record,flags);
     if(__atomic_load_n(&o.thread,__ATOMIC_ACQUIRE)!=reinterpret_cast<uintptr_t>(current_thread()) || record!=o.record) {
-        if(pipe && pipe==__atomic_load_n(&o.pipe,__ATOMIC_ACQUIRE))return kIOReturnNotReady;
+        if(pipe==__atomic_load_n(&o.pipe,__ATOMIC_ACQUIRE))return kIOReturnNotReady;
         return FunctionCast(wrapDSIBackingAllocate,callbackXE->orgDSIBacking[0])(pipe,record,flags);
     }
-    if(!o.allocating || flags || o.pipe || !pipe || !pipe->metaCast("IGAccelDisplayPipe") ||
+    if(!o.allocating || flags || o.pipe || !pipe->metaCast("IGAccelDisplayPipe") ||
        pipe->getMetaClass()->getClassSize()<0x12B0 || Display13FBMemory::field<IOService *>(pipe,0x88)!=o.accelerator ||
        Display13FBMemory::field<uintptr_t>(pipe,0x1298) || Display13FBMemory::field<uintptr_t>(pipe,0x12A0) ||
        Display13FBMemory::field<uintptr_t>(pipe,0x12A8))return kIOReturnNotReady;
@@ -53,14 +57,15 @@ uint32_t XE::wrapDSIBackingAllocate(OSObject *pipe,void *record,uint32_t flags) 
 }
 
 uint32_t XE::wrapDSIBackingFree(OSObject *pipe,void *record,uint32_t flags) {
+    if(!pipe)return kIOReturnNotReady;
     auto &o=dsiPendingBacking;
     if(!__atomic_load_n(&o.framebuffer,__ATOMIC_ACQUIRE))
         return FunctionCast(wrapDSIBackingFree,callbackXE->orgDSIBacking[1])(pipe,record,flags);
     if(__atomic_load_n(&o.thread,__ATOMIC_ACQUIRE)!=reinterpret_cast<uintptr_t>(current_thread()) || record!=o.record) {
-        if(pipe && pipe==__atomic_load_n(&o.pipe,__ATOMIC_ACQUIRE))return kIOReturnNotReady;
+        if(pipe==__atomic_load_n(&o.pipe,__ATOMIC_ACQUIRE))return kIOReturnNotReady;
         return FunctionCast(wrapDSIBackingFree,callbackXE->orgDSIBacking[1])(pipe,record,flags);
     }
-    if(!o.freeing || flags || o.armed || !pipe || pipe!=o.pipe ||
+    if(!o.freeing || flags || o.armed || pipe!=o.pipe ||
        Display13FBMemory::field<IOService *>(pipe,0x88)!=o.accelerator)return kIOReturnNotReady;
     const auto &r=*o.record;
     if(r.refs>1 || Display13FBMemory::field<uintptr_t>(pipe,0x1298)!=r.memory ||

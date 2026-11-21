@@ -14,8 +14,8 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 PYTHON_TESTS = """
 tgl_aux_observer tgl_aux_parent tgl_ccs
-tgl_gt2_urb framebuffer_training_registration framebuffer_common display13_shared_registration
-profile_admission firmware_readout display13_offline adlp_fb_candidate display13_tc_native
+tgl_gt2_urb framebuffer_training_registration framebuffer_common framebuffer_debug_sysctls framebuffer_acpi_binding display13_shared_registration
+profile_admission firmware_readout display13_offline adlp_fb_candidate display13_tc_native intel_branch_routing
 display13_ddc adlp_load_only small_gt_urb display_backend_dispatch tgl_agdc_port_status
 display_contract_adapter tgl_agdc_aux_observer xe_data_access adls_aux_parent adls_lane_power
 adls_clock_guard adls_clock_runtime adls_boot_runtime xelp_mmio_bar bigsur_pmap tahoe_iosurface
@@ -41,12 +41,12 @@ display13_shutdown display13_wake_notifications released_physical_admission rele
 accelerator_resources display13_power_dispatch tgl_recovery test_runner_contract
 """.split()
 FAMILIES = {'BigSur':'bigsur', 'Monterey':'monterey', 'Ventura':'ventura',
-            'Sonoma':'sonoma', 'Sequoia':'sequoia', 'Tahoe':'tahoe'}
+            'Sonoma':'sonoma', 'Sequoia':'sequoia', 'Tahoe':'tahoe', 'GoldenGate':'golden_gate'}
 DONOR_TESTS = """tgl_aux_native tgl_boot_power tgl_disable_native display13_agdc display13_shutdown dsi_update_dispatch dsi_path_disposal
 dsi_surface dsi_native_cache dsi_native_mode dsi_boot_probe dsi_port_adapter
 dsi_apple_adapter dsi_apple_timing_native adls_ddi_power_native display13_tc_preparation
 display13_retirement display13_port_wait framebuffer_training_registration
-framebuffer_common tgl_hdmi_wiring framebuffer_donor_runtime display13_training_lease
+framebuffer_common framebuffer_debug_sysctls framebuffer_acpi_binding tgl_hdmi_wiring framebuffer_donor_runtime display13_training_lease
 display13_tc_native display13_ddc tgl_power_fuses display13_aux display13_sst
 display13_combo_clock adls_panel_pwm display13_panel_runtime tgl_panel_timing
 tgl_agdc_port_status tgl_tc_native tgl_tc_mode tgl_mode_native tgl_panel_depth_route
@@ -106,7 +106,10 @@ def make_jobs(args, root, output):
         command += ['--donor',str(args.accelerator)]
     jobs.append(Job('xelp_forcewake_irq_native','binary-check',[('script',command)],('accelerator',)))
     for family, prefix in FAMILIES.items():
-        command = [sys.executable,str(root/'tests'/(prefix+'_pmap.py'))]
+        script = 'tahoe_pmap.py' if family == 'GoldenGate' else prefix+'_pmap.py'
+        command = [sys.executable,str(root/'tests'/script)]
+        if family == 'GoldenGate':
+            command += ['--family',family]
         if family in args.kernels:
             command += ['--kernel',str(args.kernels[family])]
         if args.hde_source:

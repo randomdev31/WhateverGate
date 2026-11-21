@@ -12,7 +12,8 @@ route=s[s.index(' const char *wake[]'):s.index(' // r107:',s.index(' const char 
 assert 'if(ok) {' in route and 'if(ok && adlnDetected)' not in route
 assert 'protect {wake[0],xelpRegularForceWakeProtected,xelpRegularForceWakeOriginal}' in route
 assert 'WhateverXeForceWakeIRQProtected' in route
-assert all(x in route for x in ['0x28C2A','0x28C9A','0x28E14','routeMultipleShort'])
+assert all(x in route for x in ['0x28C2A','0x28C9A','0x28E14'])
+assert 'routeIntelShort(patcher,index,&protect,1,address,size)' in route
 assert 'tglCSBForceWake[0](renderWakeOwner,true,1)' in s
 assert 'tglCSBForceWake[0](renderWakeOwner,false,1)' in s
 if a.donor is None:

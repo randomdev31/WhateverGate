@@ -64,6 +64,9 @@ struct XE {
  unsigned nativePanelCalls=0;
  void processNativePanel(KernelPatcher&,size_t,uintptr_t,size_t){++nativePanelCalls;}
  void processDisplay13Panel(KernelPatcher&,size_t,uintptr_t,size_t);
+ bool routeIntelShort(KernelPatcher &p,size_t id,KernelPatcher::RouteRequest *r,size_t n,uintptr_t a,size_t z){
+  return p.routeMultipleShort(id,r,n,a,z);
+ }
  bool display13FramebufferRequested=true,display13PanelPowerReady=true,adlsDisplaySelected=false;
  struct {unsigned panel=0;}adlsWiring;XELP::PanelPWM adlsPanelPWM;
  uintptr_t orgADLSLightUpEDP=0;

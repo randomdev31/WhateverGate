@@ -9,13 +9,17 @@ functions='\n'.join(re.search(r'(?:bool|uint32_t|void) XE::'+name+r'\(.*?\n\}',s
  ['wrapDSIBackingAllocate','wrapDSIBackingFree','prepareDSINativeBacking','validateDSINativeBacking','initializeDSINativeBacking','discardDSINativeBacking','probeDSINativeBacking'])
 state=re.search(r'struct DSIPendingBackingOwner \{.*?\n\};',s,re.S)[0]
 if len(sys.argv)>1:
- b=Path(sys.argv[1]).read_bytes();assert hashlib.sha256(b).hexdigest()=='bd1a21f5e622aadabdab6441f6b5c38ed73fa3053c783fdf0fb7e4b309f273d0'
+ b=Path(sys.argv[1]).read_bytes()
+ assert hashlib.sha256(b).hexdigest() in {
+  'bd1a21f5e622aadabdab6441f6b5c38ed73fa3053c783fdf0fb7e4b309f273d0',
+  '6c8ab6cce50b9529679ee4fdf5b1c37d091677d945076f41cb4b7f8196c51449',
+ }
  installer=re.search(r'bool XE::processDSIBackingHooks\(.*?\n\}',s,re.S)[0]
  offsets=[int(x,0) for x in re.search(r'offsets\[\]=\{([^}]+)',installer)[1].split(',')]
  entries=re.search(r'entries\[\]\[16\]=\{(.*?)\};',installer,re.S)[1]
  for offset,row in zip(offsets,re.findall(r'\{([^}]+)\}',entries)):
   assert b[offset:offset+16]==bytes(int(x,0) for x in row.split(','))
- assert 'routeMultipleShort' in installer
+ assert 'routeIntelShort' in installer
 code=r'''
 #include "kern_dsi_native_backing.hpp"
 #include "kern_dsi_quiesce.hpp"
@@ -134,6 +138,11 @@ struct Case {
  void discard(){assert(xe.discardDSINativeBacking(&fb));}
 };
 int main(){
+ {Case c;const auto allocations=allocCalls,frees=freeCalls;
+  NativeBacking::Record request{};
+  assert(XE::wrapDSIBackingAllocate(nullptr,&request,0)==kIOReturnNotReady);
+  assert(XE::wrapDSIBackingFree(nullptr,&request,0)==kIOReturnNotReady);
+  assert(allocCalls==allocations && freeCalls==frees);}
  {Case c;failCPUMap=true;assert(!c.xe.prepareDSINativeBacking(&c.fb));assert(!dsiPendingBacking.initialized && !cpuMaps);c.discard();}
  {Case c;memset(cpuImage,0xA5,sizeof(cpuImage));assert(c.xe.prepareDSINativeBacking(&c.fb));
   assert(dsiPendingBacking.initialized && !cpuMaps);

@@ -1,6 +1,5 @@
 #include <cstdio>
 #include "compat_kernel_fixture.hpp"
-extern "C" const char version[]="Darwin Kernel Version 25.6.9: synthetic; root:xnu-test/RELEASE_X86_64";
 #include "AppleIntelTGLCompat/AppleIntelTGLCompat.cpp"
 #include "kern_display13_fb_topology.hpp"
 #include "kern_alderlake_s.hpp"
