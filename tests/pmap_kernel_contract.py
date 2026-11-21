@@ -33,11 +33,16 @@ def check(kernel, source, family, hde_source):
 
     fn, protect, verify, store, panic = (symbols[x] for x in (
         '_pmap_enter_options', '_IOProtectCacheMode', '_pmap_verify_noncacheable', '_kernel_pmap_store', '_panic'))
-    name = '' if family == 'BigSur' else family
+    shared = family in ('Tahoe', 'GoldenGate')
+    name = {'BigSur': '', 'GoldenGate': 'Tahoe'}.get(family, family)
     block = source.split('static void tglPrepare' + name + 'MMIOUC(')[1].split('\n}')[0]
     patterns = re.findall(r'const bool (\w+)Ready=native.find\(\1,\1At(?:,false)?\);', block)
     assert len(patterns) >= 4
-    abi = re.search(r'tglNativeProtectCall\(protect,fn,XELPNative::ProtectABI::(\w+)\)', block)[1]
+    if shared:
+        selection = re.search(r'const auto abi = [^;]+;', block)[0]
+        version = read(symbols['_version'], 256).split(b'\0', 1)[0]
+    else:
+        abi = re.search(r'tglNativeProtectCall\(protect,fn,XELPNative::ProtectABI::(\w+)\)', block)[1]
     assert not re.search(r'fn\+0x|protect\+0x', block), 'fixed native instruction placement'
     include = Path(__file__).resolve().parents[1] / 'WhateverXe'
     decoder = re.search(r'static size_t tglNativeInstructionSize\(.*?\n\}',source,re.S)[0]
@@ -57,6 +62,7 @@ def check(kernel, source, family, hde_source):
     assert target
     cpp=r'''
 #include "kern_xelp_native_placement.hpp"
+#include "kern_xelp_os.hpp"
 #include "hde64.h"
 #include <cassert>
 #include <cstdlib>
@@ -82,8 +88,17 @@ uint64_t copy(uint64_t from,uint64_t to,uint64_t n){if(from!=mapped)return 0;aut
         cpp+='auto saved=input;input[at+sizeof(pattern)-1]^=1;{TGLNativePmapCode wrong(patcher,mapped);size_t ignored=0;assert(!wrong.find(pattern,ignored,'+unique+'));}input=saved;}\n'
     cpp+='}\n'
     cpp+='uint8_t protection[]={'+literal(read(protect,512))+'},accessor[]={'+literal(read(target,64))+'};\n'
-    cpp+=f'assert(XELPNative::protectCall(protection,sizeof(protection),{protect}ULL,{fn}ULL,XELPNative::ProtectABI::{abi},tglNativeInstructionSize));\n'
-    cpp+=f'assert(!XELPNative::protectCall(protection,sizeof(protection),{protect}ULL,{fn+1}ULL,XELPNative::ProtectABI::{abi},tglNativeInstructionSize));\n'
+    if shared:
+        other = 'GoldenGate' if family == 'Tahoe' else 'Tahoe'
+        cpp+='const char version[]={'+literal(version)+',0};\n'
+        cpp+=f'const auto os=XELP::kernelOS(version);assert(os==XELP::OS::{family});\n'
+        cpp+=selection+'\n'
+        cpp+=f'assert(abi==XELPNative::ProtectABI::{family});\n'
+        cpp+=f'assert(!XELPNative::protectCall(protection,sizeof(protection),{protect}ULL,{fn}ULL,XELPNative::ProtectABI::{other},tglNativeInstructionSize));\n'
+    else:
+        cpp+=f'const auto abi=XELPNative::ProtectABI::{abi};\n'
+    cpp+=f'assert(XELPNative::protectCall(protection,sizeof(protection),{protect}ULL,{fn}ULL,abi,tglNativeInstructionSize));\n'
+    cpp+=f'assert(!XELPNative::protectCall(protection,sizeof(protection),{protect}ULL,{fn+1}ULL,abi,tglNativeInstructionSize));\n'
     cpp+='assert(XELPNative::rootAccessor(accessor,sizeof(accessor)));}\n'
     with tempfile.TemporaryDirectory(prefix='xe-kernel-contract-') as directory:
         path=Path(directory);(path/'test.cpp').write_text(cpp)
@@ -94,5 +109,5 @@ uint64_t copy(uint64_t from,uint64_t to,uint64_t n){if(from!=mapped)return 0;aut
 
 if __name__=='__main__':
     import argparse
-    p=argparse.ArgumentParser();p.add_argument('--kernel',type=Path,required=True);p.add_argument('--family',choices=['BigSur','Monterey','Ventura','Sonoma','Sequoia','Tahoe'],required=True);p.add_argument('--hde-source',type=Path,required=True);a=p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument('--kernel',type=Path,required=True);p.add_argument('--family',choices=['BigSur','Monterey','Ventura','Sonoma','Sequoia','Tahoe','GoldenGate'],required=True);p.add_argument('--hde-source',type=Path,required=True);a=p.parse_args()
     check(a.kernel,(Path(__file__).resolve().parents[1]/'WhateverXe/kern_xe.cpp').read_text(),a.family,a.hde_source)

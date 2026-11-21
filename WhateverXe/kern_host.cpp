@@ -187,9 +187,9 @@ void XeHost::processKext(KernelPatcher &patcher,size_t index,mach_vm_address_t a
    uint8_t code[]={0x48,0x89,0xdf,0xe8,0,0,0,0,0x90,0x90,0x90,0x90,0x90};
    code[0]=0x48|(site.owner>=8 ? 4 : 0);code[2]=0xC7|((site.owner&7)<<3);
    const auto target=sleep+site.offset;
-   const auto distance=static_cast<int64_t>(reinterpret_cast<uintptr_t>(pendingSleepDisplays)-(target+8));
-   if(distance==static_cast<int32_t>(distance)) {
-    const auto rel=static_cast<int32_t>(distance);memcpy(code+4,&rel,4);
+   int32_t relative=0;
+   if(xe.intelBranchTarget(target+8,reinterpret_cast<uintptr_t>(pendingSleepDisplays),relative)) {
+    memcpy(code+4,&relative,4);
     patcher.routeBlock(target,code,site.length);
     ready=patcher.getError()==KernelPatcher::Error::NoError && !memcmp(reinterpret_cast<void *>(target),code,site.length);patcher.clearError();
    }

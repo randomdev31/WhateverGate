@@ -5,6 +5,8 @@
 #include <initializer_list>
 #include <cstdio>
 using Bytes=std::vector<uint8_t>;
+using XELPNative::ProtectABI;
+constexpr ProtectABI callerABIs[]={ProtectABI::Extended,ProtectABI::Tahoe,ProtectABI::GoldenGate};
 struct Program {
  Bytes bytes;std::map<size_t,size_t> boundaries;
  size_t add(std::initializer_list<uint8_t> instruction) {
@@ -22,15 +24,19 @@ struct Program {
  size_t decode(const uint8_t *p,size_t) const {
   auto entry=boundaries.find(p-bytes.data());return entry==boundaries.end()?0:entry->second;
  }
- bool protect(uintptr_t base,uintptr_t target,bool tahoe) const {
-  return XELPNative::protectCall(bytes.data(),bytes.size(),base,target,tahoe,
+ bool protect(uintptr_t base,uintptr_t target,ProtectABI abi) const {
+  return XELPNative::protectCall(bytes.data(),bytes.size(),base,target,abi,
    [this](const uint8_t *p,size_t n){return decode(p,n);});
  }
- void arguments(uintptr_t base,uintptr_t target,bool tahoe,unsigned padding=0) {
-  if(tahoe)add({0x48,0x83,0xec,8});
+ void arguments(uintptr_t base,uintptr_t target,ProtectABI abi,unsigned padding=0) {
+  if(abi!=ProtectABI::Extended)add({0x48,0x83,0xec,8});
   add({0x4c,0x89,0xff});nop(padding);add({0x4c,0x89,0xee});add({0x89,0xc2});
-  add({0x8b,0x4d,0xd4});add({0x44,0x8b,0x4d,0xd0});
-  if(!tahoe)add({0x6a,0});
+  if(abi==ProtectABI::GoldenGate) {
+   add({0x48,0x8b,0x4d,0xc8});add({0x44,0x8b,0x4d,0xd4});
+  } else {
+   add({0x8b,0x4d,0xd4});add({0x44,0x8b,0x4d,0xd0});
+  }
+  if(abi==ProtectABI::Extended)add({0x6a,0});
   add({0x48,0x8d,0x45,0xb8});add({0x50});add({0x6a,0x20});nop(padding);add({0x6a,1});
   auto call=add({0xe8,0,0,0,0});relative(call+1,base,target);
   add({0x48,0x83,0xc4,0x20});
@@ -48,25 +54,25 @@ int main() {
   assert(!XELPNative::rootCall(p.bytes.data(),p.bytes.size(),base,store+1));
   assert(!XELPNative::rootCall(p.bytes.data(),call+4,base,store));
   p.bytes[lea+2]=0x35;assert(!XELPNative::rootCall(p.bytes.data(),p.bytes.size(),base,store));
-  for(bool tahoe:{false,true}) {
-   Program q;q.nop(n);q.arguments(base,target,tahoe,n%3);q.add({0xc3});
-   assert(q.protect(base,target,tahoe));assert(!q.protect(base,target+1,tahoe));
-   assert(!q.protect(base,target,!tahoe));
+  for(auto abi:callerABIs) {
+   Program q;q.nop(n);q.arguments(base,target,abi,n%3);q.add({0xc3});
+   assert(q.protect(base,target,abi));assert(!q.protect(base,target+1,abi));
+   for(auto other:callerABIs)if(other!=abi)assert(!q.protect(base,target,other));
    // A second valid call before RET is ambiguous, not a second opportunity.
-   Program duplicate;duplicate.arguments(base,target,tahoe);duplicate.arguments(base,target,tahoe);duplicate.add({0xc3});
-   assert(!duplicate.protect(base,target,tahoe));
-   q.bytes.back()=0x90;assert(!q.protect(base,target,tahoe));
+   Program duplicate;duplicate.arguments(base,target,abi);duplicate.arguments(base,target,abi);duplicate.add({0xc3});
+   assert(!duplicate.protect(base,target,abi));
+   q.bytes.back()=0x90;assert(!q.protect(base,target,abi));
    ++cases;
   }
  }
  // Instruction-looking data in an opaque instruction is never a call site.
- for(bool tahoe:{false,true}) {
-  Program p;p.arguments(0x10000,0x20000,tahoe);p.boundaries.clear();p.boundaries[0]=p.bytes.size();p.add({0xc3});
-  assert(!p.protect(0x10000,0x20000,tahoe));
+ for(auto abi:callerABIs) {
+  Program p;p.arguments(0x10000,0x20000,abi);p.boundaries.clear();p.boundaries[0]=p.bytes.size();p.add({0xc3});
+  assert(!p.protect(0x10000,0x20000,abi));
   Program immediate;immediate.add({0x48,0xb8,0xe8,0,0,0,0,0x4c,0x89,0xff});immediate.add({0xc3});
-  assert(!immediate.protect(0x10000,0x10007,tahoe));
-  Program early;early.add({0xc3});early.arguments(0x10000,0x20000,tahoe);early.add({0xc3});
-  assert(!early.protect(0x10000,0x20000,tahoe));
+  assert(!immediate.protect(0x10000,0x10007,abi));
+  Program early;early.add({0xc3});early.arguments(0x10000,0x20000,abi);early.add({0xc3});
+  assert(!early.protect(0x10000,0x20000,abi));
  }
  Program field;field.add({0x55});field.nop(3);field.add({0x48,0x89,0xe5});
  field.add({0x48,0xb8,0,0,0,0,0,0x80,0xff,0xff});field.nop(2);field.add({0x48,0x01,0xf0});

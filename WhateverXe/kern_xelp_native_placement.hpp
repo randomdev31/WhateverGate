@@ -144,11 +144,12 @@ inline bool rootAccessor(const uint8_t *bytes,size_t length) {
 // Scan a bounded native function on decoded instruction boundaries. Require
 // exactly one call to pmap, its complete register/stack argument setup, stack
 // cleanup, and the function's terminating RET. Embedded bytes are not calls.
-enum class ProtectABI { Legacy, Extended, Tahoe };
+enum class ProtectABI { Legacy, Extended, Tahoe, GoldenGate };
 template<class Decode> bool protectCall(const uint8_t *bytes,size_t length,uintptr_t base,
  uintptr_t pmap,ProtectABI abi,Decode decode) {
  if(!bytes || !base || !pmap || length>UINTPTR_MAX-base)return false;
  const bool legacy=abi==ProtectABI::Legacy, extra=abi==ProtectABI::Extended;
+ const bool goldenGate=abi==ProtectABI::GoldenGate;
  unsigned found=0;
  for(size_t pos=0;pos<length;) {
   const size_t size=decode(bytes+pos,length-pos);
@@ -157,7 +158,9 @@ template<class Decode> bool protectCall(const uint8_t *bytes,size_t length,uintp
   Cursor c {bytes,length,pos};
   bool args=(extra || c.take("\x48\x83\xec\x08",4)) &&
    c.take(legacy?"\x48\x89\xdf":"\x4c\x89\xff",3) && c.take(legacy?"\x4c\x89\xe6":"\x4c\x89\xee",3) && c.take("\x89\xc2",2) &&
-   c.take(legacy?"\x8b\x4d\xd0":"\x8b\x4d\xd4",3) && c.take(legacy?"\x44\x8b\x4d\xd4":"\x44\x8b\x4d\xd0",4) &&
+   // Darwin 27.2 loads the protection argument into RCX and cache flags into R9D.
+   (goldenGate ? c.take("\x48\x8b\x4d\xc8",4) : c.take(legacy?"\x8b\x4d\xd0":"\x8b\x4d\xd4",3)) &&
+   c.take(legacy || goldenGate?"\x44\x8b\x4d\xd4":"\x44\x8b\x4d\xd0",4) &&
    (!extra || c.take("\x6a\0",2)) && c.take("\x48\x8d\x45\xb8",4) &&
    c.take("\x50",1) && c.take("\x6a\x20",2) && c.take("\x6a\x01",2) && c.take("\xe8",1);
   if(args && c.skip(4) && XELPCall::relativeTarget(bytes+c.pos-4,base+c.pos)==pmap &&
@@ -173,10 +176,5 @@ template<class Decode> bool protectCall(const uint8_t *bytes,size_t length,uintp
  }
  return false;
 }
-template<class Decode> bool protectCall(const uint8_t *bytes,size_t length,uintptr_t base,
- uintptr_t pmap,bool tahoe,Decode decode) {
- return protectCall(bytes,length,base,pmap,tahoe?ProtectABI::Tahoe:ProtectABI::Extended,decode);
-}
-
 }
 #endif

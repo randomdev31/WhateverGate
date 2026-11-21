@@ -10,6 +10,12 @@
 
 #include "kern_host.hpp"
 #include "kern_graphics_activation.hpp"
+#include "kern_xelp_os.hpp"
+
+extern "C" const char version[];
+
+// The Lilu development headers name kernel versions through Tahoe.
+static constexpr auto goldenGate = static_cast<KernelVersion>(27);
 
 static XeHost host;
 
@@ -36,8 +42,10 @@ PluginConfiguration ADDPR(config) {
 	bootargBeta,
 	arrsize(bootargBeta),
 	KernelVersion::BigSur,
-	KernelVersion::Tahoe,
+	goldenGate,
 	[]() {
+		if (getKernelVersion() > KernelVersion::Tahoe && XELP::kernelOS(version) != XELP::OS::GoldenGate)
+			return;
 		host.init();
 		WEXGraphicsActivation::publish();
 	}

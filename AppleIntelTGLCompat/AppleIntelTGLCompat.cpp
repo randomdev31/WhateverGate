@@ -10,8 +10,43 @@
 #include "kern_xelp_device.hpp"
 #include "kern_xelp_os.hpp"
 #include "kern_graphics_activation.hpp"
+#include "kern_xelp_call_target.hpp"
 
 extern "C" const char version[];
+
+#if defined(__x86_64__) && defined(__APPLE__)
+// The provider is linked beside the Intel donor in the auxiliary KC. These
+// stubs let a five-byte donor branch reach WhateverXe in the boot KC.
+#define WEX_STRING_VALUE(x) #x
+#define WEX_STRING(x) WEX_STRING_VALUE(x)
+#define WEX_BRANCH_RELAY_COUNT 64
+constexpr size_t branchRelayCount=WEX_BRANCH_RELAY_COUNT;
+__attribute__((used)) static uintptr_t branchRelayTargets[branchRelayCount] asm("_wexBranchRelayTargets") {};
+extern "C" const uint8_t wexBranchRelays[];
+asm(".text\n"
+    ".p2align 3\n"
+    ".private_extern _wexBranchRelays\n"
+    "_wexBranchRelays:\n"
+    ".set wexBranchRelayOffset,0\n"
+    ".rept " WEX_STRING(WEX_BRANCH_RELAY_COUNT) "\n"
+    "jmpq *_wexBranchRelayTargets+wexBranchRelayOffset(%rip)\n"
+    ".byte 0x66,0x90\n"
+    ".set wexBranchRelayOffset,wexBranchRelayOffset+8\n"
+    ".endr\n");
+#undef WEX_BRANCH_RELAY_COUNT
+#undef WEX_STRING
+#undef WEX_STRING_VALUE
+
+extern "C" uintptr_t xelpReserveBranchRelay(uint32_t abi,uintptr_t target) {
+    if(abi!=XELPCall::BranchRelayABI || !target)return 0;
+    for(size_t i=0;i<branchRelayCount;++i) {
+        const auto recorded=__sync_val_compare_and_swap(&branchRelayTargets[i],0,target);
+        if(!recorded || recorded==target)
+            return reinterpret_cast<uintptr_t>(wexBranchRelays+i*8);
+    }
+    return 0;
+}
+#endif
 
 template <typename T> static T &field(void *object, size_t offset) {
     return *reinterpret_cast<T *>(static_cast<uint8_t *>(object) + offset);

@@ -48,6 +48,9 @@ struct XE {
  ORIGINALS
  WRAPPERS
  bool processFramebufferTraining(KernelPatcher&,size_t,uintptr_t,size_t);
+ bool routeIntelShort(KernelPatcher &p,size_t id,KernelPatcher::RouteRequest *r,size_t n,uintptr_t a,size_t z){
+  return p.routeMultipleShort(id,r,n,a,z);
+ }
 };
 FUNCTION
 int main(int argc,char **argv){

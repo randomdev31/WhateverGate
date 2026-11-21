@@ -10,7 +10,7 @@ import re
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def compile_fixture(directory, fixture):
+def compile_fixture(directory, fixture, release=(25, 6, 9)):
     directory = Path(directory)
     for name in ['IOKit/IOBufferMemoryDescriptor.h', 'IOKit/IOLib.h',
                  'IOKit/pci/IOPCIDevice.h', 'libkern/c++/OSData.h',
@@ -23,8 +23,13 @@ def compile_fixture(directory, fixture):
     # Lilu's shouldLoad policy and OSKext linking remain external boundaries.
     start = (ROOT/'WhateverXe/kern_start.cpp').read_text()
     activation = re.search(r'\[\]\(\) \{.*?\n\t\}', start, re.S)[0]
+    major, minor, patch = release
     cpp.write_text('#include "compat_kernel_fixture.hpp"\n'
                    '#include "kern_graphics_activation.hpp"\n'
+                   '#include "kern_xelp_os.hpp"\n'
+                   'enum KernelVersion : unsigned { Tahoe = 25 };\n'
+                   f'KernelVersion getKernelVersion(){{return static_cast<KernelVersion>({major});}}\n'
+                   f'extern "C" const char version[]="Darwin Kernel Version {major}.{minor}.{patch}: fixture/RELEASE_X86_64";\n'
                    'static unsigned hostStarts=0;\n'
                    'struct {void init(){++hostStarts;}} host;\n'
                    'void activateFixturePlugin(){('+activation+')();}\n'+fixture)

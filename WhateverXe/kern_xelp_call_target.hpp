@@ -5,6 +5,18 @@
 #include <stdint.h>
 #include <string.h>
 namespace XELPCall {
+inline bool relativeDisplacement(uintptr_t next, uintptr_t target, int32_t &result) {
+ if(!next || !target)return false;
+ const bool backward=target<next;
+ const auto distance=backward ? next-target : target-next;
+ if(distance>static_cast<uintptr_t>(INT32_MAX)+backward)return false;
+ const auto magnitude=static_cast<int64_t>(distance);
+ result=static_cast<int32_t>(backward ? -magnitude : magnitude);
+ return true;
+}
+
+constexpr uint32_t BranchRelayABI=1;
+
 inline uintptr_t relativeTarget(const uint8_t *relative,uintptr_t next) {
  const uint32_t displacement=static_cast<uint32_t>(relative[0]) |
   static_cast<uint32_t>(relative[1])<<8 | static_cast<uint32_t>(relative[2])<<16 |

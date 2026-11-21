@@ -47,6 +47,9 @@ struct XE {
  uint32_t framebufferProtocolCalls=0;void *framebufferStartedController=nullptr;
  uintptr_t orgFramebufferUserClient=0,orgFramebufferAGDCCallback=0;
  bool processFramebufferAGDC(KernelPatcher &,size_t,uintptr_t,size_t);
+ bool routeIntelShort(KernelPatcher &p,size_t id,KernelPatcher::RouteRequest *r,size_t n,uintptr_t a,size_t z){
+  return p.routeMultipleShort(id,r,n,a,z);
+ }
  bool processDisplay13TrialAGDC(KernelPatcher &,size_t,uintptr_t,size_t){return true;}
  static uint32_t wrapFramebufferUserClient(IOService *,void *,void *,uint32_t,void **);
  static uint32_t wrapFramebufferAGDCCallback(IOService *,uint32_t,unsigned long,uint32_t);
